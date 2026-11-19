@@ -99,7 +99,7 @@ novel-writer-studio/
 
 ## 版本
 
-当前版本 **2.9.1**，最低支持 Obsidian 1.5.0。
+当前版本 **2.13.0**，最低支持 Obsidian 1.5.0。
 
 ## License
 
