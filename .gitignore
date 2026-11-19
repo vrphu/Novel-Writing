@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+
+# 插件运行期生成的本地数据（含用户正文统计，绝不入库）
+data.json
