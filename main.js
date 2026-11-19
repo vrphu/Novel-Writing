@@ -6,14 +6,29 @@ const {
   TFile, TFolder, normalizePath, MarkdownView
 } = obsidian;
 
-/* CM6 装饰 API 兼容降级 */
+/* ===== v3.0 根因修复：CM6 装饰 API 加载 =====
+   Obsidian 的 require('obsidian') 导出对象里【不含】Decoration/ViewPlugin/RangeSetBuilder
+   （已在 obsidian.asar 的 __export 表核实）。旧版靠它判定 HAS_CM=false，导致整条
+   正文装饰层（设定高亮/引号高亮/批注/里程碑/打字模式）从未注册 —— 这就是"设不了、
+   高亮不出来"的真正原因。正确做法：用 Obsidian 拦截的 require 直接取内部 @codemirror 模块。*/
 let Decoration = null, ViewPlugin = null, RangeSetBuilder = null;
+const cmLoadErrors = [];
 try {
-  Decoration = obsidian.Decoration;
-  ViewPlugin = obsidian.ViewPlugin;
-  RangeSetBuilder = obsidian.RangeSetBuilder;
-} catch (e) { /* noop */ }
-const HAS_CM = !!(Decoration && ViewPlugin && RangeSetBuilder);
+  const cmView = require('@codemirror/view');
+  Decoration = cmView.Decoration;
+  ViewPlugin = cmView.ViewPlugin;
+  if (cmView.EditorView) globalThis.__NWS_EditorView = cmView.EditorView;
+} catch (e) { cmLoadErrors.push('@codemirror/view: ' + (e && e.message || e)); }
+try {
+  const cmState = require('@codemirror/state');
+  RangeSetBuilder = cmState.RangeSetBuilder;
+} catch (e) { cmLoadErrors.push('@codemirror/state: ' + (e && e.message || e)); }
+/* 兜底：部分老旧/定制版 Obsidian 不暴露内部模块时，尝试官方对象（大概率没有） */
+if (!ViewPlugin && obsidian.ViewPlugin) ViewPlugin = obsidian.ViewPlugin;
+if (!Decoration && obsidian.Decoration) Decoration = obsidian.Decoration;
+if (!RangeSetBuilder && obsidian.RangeSetBuilder) RangeSetBuilder = obsidian.RangeSetBuilder;
+/* ViewPlugin.fromClass 需要 Decoration.set 可用；三者齐备才注册 */
+const HAS_CM = !!(Decoration && ViewPlugin && Decoration.set && ViewPlugin.fromClass);
 
 /* ---------- 常量 ---------- */
 const VIEW_CATALOG = 'nws-catalog';
@@ -97,6 +112,12 @@ ENTITY_GROUPS.forEach((g) => g.libs.forEach((l) => { LIB_GROUP[l] = g.name; }));
 function groupOfLib(lib) { return LIB_GROUP[lib] || '独立'; }
 function libsOfGroup(group) { const g = GROUP_BY_NAME[group]; return g ? g.libs.slice() : ['自定义']; }
 function groupEmoji(group) { return (GROUP_BY_NAME[group] || {}).emoji || '📌'; }
+/* v2.11：大类 → 子文件夹名（大类「地理/势力库」含斜杠，替换为间隔号以免变成多级目录） */
+function groupFolderName(group) {
+  return String(group || '独立').replace(/[\\/:*?"<>|]/g, '·').trim() || '独立';
+}
+/* v2.11：某条设定应存放的分类目录（设定/<大类>/），大类以 frontmatter nws_group 为准 */
+function groupFolderOf(e) { return groupFolderName((e && e.group) || groupOfLib((e && e.type) || '人物') || '独立'); }
 function groupFields(group) { const g = GROUP_BY_NAME[group] || GROUP_BY_NAME['独立']; return g.fields; }
 
 /* 小库定义（含模板字段）。保留全部旧库名以兼容已有数据，并新增大库所需的新库。 */
@@ -178,26 +199,29 @@ const DEFAULT_OUTLINE_TYPES = ['总纲', '卷纲', '章节', '情节', '人物',
 
 /* v2.6.1：章节状态四选项（点目录里的状态标签循环切换）。旧值映射：空白→草稿、草稿→写作中、修订中→待修订、已完成/已定稿→已定稿 */
 const CH_STATUS = ['草稿', '写作中', '待修订', '已定稿'];
-const PLUGIN_VERSION = '2.9.1';
+const PLUGIN_VERSION = '2.13.0';
 /* 设定笔记「出场章节」自动统计区的标记（只替换标记之后的内容，不碰用户正文） */
 const NWS_APPEAR_MARK = '<!-- NWS:APPEARANCES -->';
 
 /* ===== v2.1：码字数据 / 番茄钟 / 专注模式 ===== */
 const DEFAULT_CHAPTER_TARGET = 3000;
-/* 专注壁纸：纯 CSS 渐变，无需外部图片；深浅各 3 套 */
+/* 专注壁纸：纯 CSS 渐变，无需外部图片 */
 const FOCUS_WALLPAPERS = [
   { id: 'none', name: '无壁纸', theme: 'auto', css: '' },
   { id: 'mist', name: '晨雾·浅', theme: 'light', css: 'linear-gradient(135deg,#f3f0e9 0%,#e8eee9 45%,#dfe6ee 100%)' },
   { id: 'sand', name: '暖沙·浅', theme: 'light', css: 'linear-gradient(135deg,#faf3e7 0%,#f0e5d2 55%,#e7d9c3 100%)' },
   { id: 'lilac', name: '丁香·浅', theme: 'light', css: 'linear-gradient(135deg,#f3eef5 0%,#e9e2ef 50%,#dfe6f0 100%)' },
-  { id: 'ink', name: '夜墨·深', theme: 'dark', css: 'linear-gradient(135deg,#1f2530 0%,#232b33 50%,#1a2029 100%)' },
-  { id: 'pine', name: '松林·深', theme: 'dark', css: 'linear-gradient(135deg,#1b2a26 0%,#20332d 55%,#18241f 100%)' },
-  { id: 'plum', name: '暮紫·深', theme: 'dark', css: 'linear-gradient(135deg,#2a2431 0%,#322a3b 50%,#211d2a 100%)' },
-  /* v2.8：低刺激·更易专注的深色系（低对比、去蓝光） */
-  { id: 'graphite', name: '石墨·深', theme: 'dark', css: 'linear-gradient(135deg,#1a1c1f 0%,#1e2124 55%,#141619 100%)' },
-  { id: 'coffee', name: '咖啡·深', theme: 'dark', css: 'linear-gradient(135deg,#221b15 0%,#2a221a 55%,#191410 100%)' },
-  { id: 'darkgreen', name: '墨绿·深', theme: 'dark', css: 'linear-gradient(135deg,#121d17 0%,#17241e 55%,#0e1712 100%)' },
-  { id: 'paper', name: '纸白·浅', theme: 'light', css: 'linear-gradient(135deg,#f7f5ef 0%,#f1eee6 55%,#e9e5da 100%)' },
+  { id: 'paper', name: '纸白·浅', theme: 'light', css: 'linear-gradient(135deg,#faf8f2 0%,#f4f1e9 55%,#ece8dd 100%)' },
+  /* v2.13：纯黑夜模式——不发灰、高对比深色系（底色接近纯黑，色彩仅作氛围微调） */
+  { id: 'midnight', name: '纯黑·夜', theme: 'dark', css: 'linear-gradient(180deg,#040507 0%,#07090d 60%,#050609 100%)' },
+  { id: 'navy', name: '藏蓝·夜', theme: 'dark', css: 'linear-gradient(180deg,#040813 0%,#081020 60%,#050a14 100%)' },
+  { id: 'espresso', name: '深咖·夜', theme: 'dark', css: 'linear-gradient(180deg,#0a0705 0%,#140d08 60%,#0a0705 100%)' },
+  { id: 'forest', name: '墨黑绿·夜', theme: 'dark', css: 'linear-gradient(180deg,#040a06 0%,#0a150c 60%,#050b07 100%)' },
+  { id: 'wine', name: '深酒红·夜', theme: 'dark', css: 'linear-gradient(180deg,#0a0407 0%,#150a0f 60%,#0a0508 100%)' },
+  { id: 'ink', name: '夜墨·深', theme: 'dark', css: 'linear-gradient(135deg,#1a2130 0%,#253048 50%,#121722 100%)' },
+  { id: 'plum', name: '暮紫·深', theme: 'dark', css: 'linear-gradient(135deg,#221a2c 0%,#302442 50%,#170f20 100%)' },
+  { id: 'graphite', name: '石墨·深', theme: 'dark', css: 'linear-gradient(135deg,#14171b 0%,#1d222a 55%,#0c0e11 100%)' },
+  { id: 'darkgreen', name: '墨绿·深', theme: 'dark', css: 'linear-gradient(135deg,#0c1712 0%,#14231c 55%,#08110c 100%)' },
 ];
 /* 程序化背景音（Web Audio 合成，不依赖外部文件）：持续环境声，可随时关 */
 const FOCUS_SOUNDS = [
@@ -256,9 +280,9 @@ const DEFAULT_SETTINGS = {
   entityNameMatch: true,
   entityAliasMatch: true,
   entityEmoji: true,
+  entityClickJump: true,                // v3.0：单击正文设定词直接打开该设定笔记
   noteChip: false,
   autoCollectBracket: false,
-  dunhaoSearch: true,
   hoverDelay: 200,
   currentPara: false,
   /* v2.1 码字数据 / 专注 */
@@ -270,39 +294,27 @@ const DEFAULT_SETTINGS = {
   pomodoroLongBreak: 15,                // 长休分钟
   pomodoroRounds: 4,                    // 几轮后长休
   focusMinutes: 25,                     // 自定义专注时长
-  focusWallpaper: 'graphite',           // 专注壁纸 id（默认低刺激石墨深色）
+  focusWallpaper: 'midnight',           // 专注壁纸 id（默认纯黑夜模式）
   focusSound: 'off',                   // 背景音 id（可持续环境声，可关）
   focusSoundVolume: 0.3,               // 背景音音量 0-1
   /* v2.8：更易专注 */
   focusFullscreen: true,               // 进入专注自动全屏（隐藏侧边栏 + 系统全屏）
-  focusDim: 0.55,                      // 专注遮罩变暗程度 0-0.9
-  typeSound: 'key',                    // 打字音效 id（每次敲键响一下）
+  focusDim: 0.32,                      // 专注遮罩变暗程度 0-0.9（v2.11 从 .55 调低，去发灰感）
+  typeSound: 'off',                    // 打字音效 id（v2.11：默认静音，仅专注会话中才响）
   typeSoundVolume: 0.35,               // 打字音效音量 0-1
   typingMode: false,                   // 打字模式：当前段高亮+前后渐淡
   typingRadius: 2,                     // 渐淡段数
-  /* v2.2 快捷符号栏 */
-  symbolBar: true,                     // 是否显示悬浮符号栏
-  symbolBarCollapsed: false,           // 是否收起
-  symbolBarPos: null,                  // 位置 {x,y}，null=默认右侧
   lineMode: 'both',                    // 旧字段，兼容读取（三轴开关见 visibleAxes）
   /* v2.4：三轴独立开关——任意组合显示时间/空间/情绪线；null 时按 lineMode 推断 */
   visibleAxes: ['time', 'space'],
   /* v2.7：批注 + 码字里程碑 */
   annotShow: true,                     // 批注底纹开关
   milestoneMark: true,                 // 每 N 字在行右侧标注里程碑
-  milestoneStep: 500,
-  /* v2.9：正文标记体系（？？待查 / ！！待改 / @@搜角色 / //模糊搜设定） */
-  todoFile: '大纲/待查待改清单.md',     // 标记自动汇总到的表格文件
-  appearSync: true,                    // 设定笔记末尾自动生成「出场章节」统计表
+  milestoneStep: 300,                  // 每 300 字在行右标注里程碑
+  dailyGoal: 1000,                     // v2.13：日更目标字数（目标达成率统计）
+  /* 设定笔记末尾自动生成「出场章节」统计表（保留） */
+  appearSync: true,
 };
-/* 快捷符号栏分组：常用中文标点 + 写作符号 + 特殊符号 */
-const SYMBOL_GROUPS = [
-  { name: '常用', items: ['，', '。', '？', '！', '、', '；', '：', '…', '—', '·'] },
-  { name: '引号', items: ['“', '”', '‘', '’', '「', '」', '《', '》', '〈', '〉'] },
-  { name: '括号', items: ['（', '）', '【', '】', '〔', '〕', '〖', '〗', '『', '』'] },
-  { name: '特殊', items: ['～', '￥', '§', '※', '°', '℃', '±', '×', '÷', '∞'] },
-];
-
 /* ---------- 工具 ---------- */
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -361,8 +373,14 @@ class NovelWriterStudio extends Plugin {
     this.data = this.normalizeData(saved);
     this.settings = Object.assign({}, DEFAULT_SETTINGS, this.data.settings || {});
     /* v2.8 迁移：旧「轻键盘」从背景音拆到打字音效 */
-    if (this.settings.focusSound === 'key') { this.settings.focusSound = 'off'; this.settings.typeSound = this.settings.typeSound || 'key'; }
-    if (this.settings.focusWallpaper === 'mist') this.settings.focusWallpaper = 'graphite';
+    if (this.settings.focusSound === 'key') { this.settings.focusSound = 'off'; }
+    /* v2.11：默认打字静音；仅把从未设置过的旧值归零，尊重用户主动选过的音效 */
+    if (this.settings.typeSound === undefined || this.settings.typeSound === null || this.settings.typeSound === 'key') this.settings.typeSound = 'off';
+    if (this.settings.focusWallpaper === 'mist' || this.settings.focusWallpaper === 'graphite' || this.settings.focusWallpaper === 'pine' || this.settings.focusWallpaper === 'slate' || this.settings.focusWallpaper === 'coffee' || this.settings.focusWallpaper === 'amber') this.settings.focusWallpaper = 'midnight';
+    /* v2.11 迁移：旧遮罩 0.55 太灰 → 调亮到 0.32（尊重用户自定义值） */
+    if (this.settings.focusDim === 0.55) this.settings.focusDim = 0.32;
+    /* v2.10 迁移：里程碑 500 → 300；仅当仍是旧默认值时改，尊重用户自定义值 */
+    if (this.settings.milestoneStep === 500) this.settings.milestoneStep = 300;
 
     this.entityVersion = 0;
     this.wordCache = Object.create(null);
@@ -370,7 +388,6 @@ class NovelWriterStudio extends Plugin {
     this.capturing = false;
     this.scheduleSave = debounce(() => this.saveNow(), 1000);
     this.scheduleRescan = debounce(() => this.rescan(true), 600);
-    this.scheduleTodoWrite = debounce(() => this.writeTodoFile(), 2000);
     this.scheduleAppearSync = debounce(() => this.syncEntityAppearances(), 2500);
     /* v2.1 码字实时状态 */
     this.paceSamples = [];              // [{t, w}] 最近码字样本（实时速度）
@@ -387,6 +404,7 @@ class NovelWriterStudio extends Plugin {
     await step('大纲文件→索引', () => this.syncOutlineFiles());
     await step('设定索引→文件', () => this.ensureEntityFiles());
     await step('写入大类归属', () => this.ensureGroupMeta());
+    await step('设定按大类分目录', () => this.migrateEntityFolders());
     await step('清理模板提示语', () => this.cleanTemplateHints());
     await step('大纲索引→文件', () => this.ensureOutlineFiles());
     await step('灵感索引→文件', () => this.ensureNoteFiles());
@@ -403,7 +421,12 @@ class NovelWriterStudio extends Plugin {
     this.registerView(VIEW_STATS, (leaf) => new StatsView(leaf, this));
     this.registerView(VIEW_ANNOT, (leaf) => new AnnotsView(leaf, this));
 
-    if (HAS_CM) this.registerEditorExtension(this.buildMarkExtension());
+    if (HAS_CM) {
+      this.registerEditorExtension(this.buildMarkExtension());
+      console.log('[小说写作台] CM6 正文装饰层已注册（设定高亮/引号/批注/里程碑生效）');
+    } else {
+      console.error('[小说写作台] CM6 装饰层加载失败，正文高亮不可用。诊断：', cmLoadErrors.join(' | ') || '模块未导出装饰类');
+    }
 
     this.addRibbonIcon('folder-tree', '写作台 · 目录', () => this.activateView(VIEW_CATALOG));
     this.addRibbonIcon('list-tree', '写作台 · 大纲', () => this.activateView(VIEW_OUTLINE));
@@ -420,7 +443,7 @@ class NovelWriterStudio extends Plugin {
     this.buildHover();
     this.buildAnnotHover();
     this.buildProgressBar();
-    this.buildSymbolBar();
+    this.buildFocusHUD();
     this.registerCommands();
     this.registerContextMenu();
     this.registerEvent(this.app.vault.on('modify', () => this.scheduleRescan()));
@@ -434,16 +457,16 @@ class NovelWriterStudio extends Plugin {
 
     this.addSettingTab(new NSSettingTab(this.app, this));
     setTimeout(() => this.refreshViews(), 800);
-    /* v2.6.1：加载成功提示——看到这条说明新版已生效（旧版一直没重载会导致高亮/右键/状态缺失） */
+    /* 加载成功提示：HAS_CM 状态直接反映正文高亮是否可用（v2.10 根因修复） */
     const migrated = !saved.schemaVersion || saved.schemaVersion < 13;
-    setTimeout(() => new Notice('📖 小说写作台 v' + PLUGIN_VERSION + ' 已加载' + (migrated ? '，旧数据已自动迁移 ✓' : '') + '。若正文着色/高亮未生效，请到 设置→第三方插件 关闭再打开本插件'), 1200);
+    const cmNote = HAS_CM ? '正文设定高亮已就绪' : '⚠️ 正文高亮不可用（CM6 未加载，请看控制台）';
+    setTimeout(() => new Notice('📖 小说写作台 v' + PLUGIN_VERSION + ' 已加载' + (migrated ? ' · 旧数据已迁移' : '') + ' · ' + cmNote), 1200);
   }
 
   onunload() {
     if (this.hoverEl) this.hoverEl.remove();
     if (this.barEl) this.barEl.remove();
-    if (this.symbolBarEl) this.symbolBarEl.remove();
-    if (this._symDragCleanup) this._symDragCleanup();
+    if (this.hudEl) this.hudEl.remove();
     clearTimeout(this.hoverTimer); clearTimeout(this.hoverHideTimer);
     if (this._barTimer) clearInterval(this._barTimer);
     this.stopSound();
@@ -572,6 +595,8 @@ class NovelWriterStudio extends Plugin {
     (d.lineNodes || []).forEach((n) => { if (!n.trackId) n.trackId = (n.line === 'space' ? 'trk_space' : 'trk_time'); });
     d.daily = d.daily || {};
     d.focusSessions = d.focusSessions || [];
+    d.pomo = d.pomo || { started: 0, completed: 0 }; // v2.13 番茄钟完成率
+    Object.keys(d.daily).forEach((k) => { const dd = d.daily[k]; if (dd && !Array.isArray(dd.hours)) dd.hours = Object.assign(Array(24).fill(0), dd.hours || {}); });
     Object.keys(d.chapters || {}).forEach((p) => {
       const m = d.chapters[p];
       if (m && m.target == null) m.target = 0; // 0 = 未单独设定，使用全局默认
@@ -590,9 +615,6 @@ class NovelWriterStudio extends Plugin {
     /* v2.7：批注数据（不改动原文，随章节保存） */
     d.annotations = Array.isArray(d.annotations) ? d.annotations : [];
     d.annotations.forEach((a) => { a.id = a.id || uid(); a.quote = a.quote || ''; a.note = a.note || ''; a.path = a.path || ''; a.from = a.from || 0; a.to = a.to || 0; a.created = a.created || Date.now(); });
-    /* v2.9：待查资料 / 待修改 标记（正文 ？？内容？？ / ！！内容！！ 自动收集） */
-    d.todos = Array.isArray(d.todos) ? d.todos : [];
-    d.todos.forEach((t) => { t.id = t.id || uid(); t.type = t.type === 'fix' ? 'fix' : 'query'; t.content = t.content || ''; t.path = t.path || ''; t.created = t.created || Date.now(); });
     return d;
   }
   async saveNow() { this.data.settings = this.settings; await this.saveData(this.data); }
@@ -620,6 +642,8 @@ class NovelWriterStudio extends Plugin {
      v1.5：设定改为扁平存放（设定/<名称>.md），库降级为 frontmatter 里的类型，
      不再铺 15 个物理子目录；旧的 设定/<库>/<名>.md 仍可读，编辑时自动迁移到扁平路径。 */
   libFolder(lib) { return normalizePath(this.settings.folderSetting || '设定'); }
+  /* v2.11：按大类把设定分门别类放进 设定/<大类>/ 子文件夹 */
+  entityFolder(e) { return normalizePath(this.libFolder() + '/' + groupFolderOf(e)); }
   allLibs() {
     const names = this.data.entityTypes.slice();
     LIBRARIES.forEach((l) => { if (names.indexOf(l.name) < 0) names.push(l.name); });
@@ -662,9 +686,8 @@ class NovelWriterStudio extends Plugin {
   }
   /* 新建或更新设定文件；update 时保留用户手写正文，仅替换 frontmatter */
   async writeEntityFile(e, isNew) {
-    const lib = e.type || '人物';
-    await this.ensureFolder(this.libFolder(lib));
-    const dir = this.libFolder(lib);
+    const dir = this.entityFolder(e);
+    await this.ensureFolder(dir);
     const fname = this.safeFileName(e.name) + '.md';
     let path = normalizePath(dir + '/' + fname);
     // 旧路径（换库/改名）需迁移
@@ -772,6 +795,24 @@ class NovelWriterStudio extends Plugin {
     }
     if (changed) await this.saveNow();
   }
+  /* v2.11：把扁平/旧目录里的设定文件移动到 设定/<大类>/ 子文件夹（正文与 frontmatter 原样保留） */
+  async migrateEntityFolders() {
+    let changed = false;
+    for (const e of this.data.entities) {
+      if (!e.file) continue;
+      const want = this.entityFolder(e) + '/' + this.safeFileName(e.name) + '.md';
+      const normWant = normalizePath(want);
+      if (normalizePath(e.file) === normWant) continue;
+      const old = this.app.vault.getAbstractFileByPath(e.file);
+      if (old instanceof TFile) {
+        try { await this.app.vault.rename(old, normWant); e.file = normWant; changed = true; }
+        catch (err) { console.error('[小说写作台] 设定分目录移动失败:', e.name, err); }
+      } else {
+        e.file = normWant; changed = true;
+      }
+    }
+    if (changed) await this.saveNow();
+  }
   /* v2.3：清理模板文件里那种"建立模板后的话"（可见提示语），只删插件自己写的行，保留用户正文 */
   async cleanTemplateHints() {
     const roots = [normalizePath(this.settings.folderSetting || '设定'), normalizePath(this.settings.folderOutline || '大纲')];
@@ -789,9 +830,13 @@ class NovelWriterStudio extends Plugin {
       }
     }
   }
-  /* v1.5：设定扁平化后无需为每库建子目录，仅确保设定根目录存在 */
+  /* v2.11：设定根目录下建 6 大类（+ 独立）子文件夹，分门别类 */
   async ensureLibFolders() {
-    await this.ensureFolder(normalizePath(this.settings.folderSetting || '设定'));
+    const root = normalizePath(this.settings.folderSetting || '设定');
+    await this.ensureFolder(root);
+    for (const g of ENTITY_GROUPS) {
+      await this.ensureFolder(normalizePath(root + '/' + groupFolderName(g.name)));
+    }
   }
 
   /* ========== v1.5 大纲文件化引擎 ==========
@@ -1066,12 +1111,18 @@ class NovelWriterStudio extends Plugin {
         new Notice(n > 0 ? '本章目标：' + fmt(n) + ' 字' : '本章目标已跟随全局默认');
       }).open();
   }
-  /* 记录码字增量（由 CM6 在正文变更时调用），按天累计 */
+  /* 记录码字增量（由 CM6 在正文变更时调用），按天累计；v2.13 另记小时分布/工作日周末 */
   recordTyping(path, deltaWords) {
     if (!deltaWords || deltaWords <= 0) return;
     const key = dateKey();
     const d = this.data.daily[key] || (this.data.daily[key] = { words: 0, secs: 0, focus: 0, sessions: 0 });
     d.words += deltaWords;
+    /* v2.13：时间分布埋点——小时段 + 工作日/周末 */
+    const now0 = new Date();
+    if (!Array.isArray(d.hours) || d.hours.length !== 24) d.hours = Object.assign(Array(24).fill(0), d.hours || {});
+    d.hours[now0.getHours()] += deltaWords;
+    const dow = now0.getDay();
+    if (dow === 0 || dow === 6) d.we = (d.we || 0) + deltaWords; else d.wk = (d.wk || 0) + deltaWords;
     /* v2.5：本章累计输入（用于每章码字速度） */
     const cm = this.data.chapters[path] = this.data.chapters[path] || {};
     const tm = cm.timing = Object.assign({ open: 0, active: 0, focus: 0, written: 0 }, cm.timing || {});
@@ -1086,7 +1137,16 @@ class NovelWriterStudio extends Plugin {
     if (this.paceSamples.length > 400) this.paceSamples.splice(0, this.paceSamples.length - 400);
     this.scheduleSave();
     this.refreshProgressBar();
+    this.refreshFocusHUD();
     if (this.statsViewOpen()) this.scheduleStatsRefresh();
+  }
+  /* v2.13：删除字数记录（效率：删除修改比例） */
+  recordDeletion(n) {
+    if (!n || n <= 0) return;
+    const key = dateKey();
+    const d = this.data.daily[key] || (this.data.daily[key] = { words: 0, secs: 0, focus: 0, sessions: 0 });
+    d.del = (d.del || 0) + n;
+    this.scheduleSave();
   }
   /* 实时码字速度：最近 N 秒的字数 / 秒 → 字/分钟 */
   pacePerMinute() {
@@ -1115,6 +1175,7 @@ class NovelWriterStudio extends Plugin {
   /* 每秒 tick：刷新进度条上的实时速度 + 专注计时落盘 + v2.5 每章计时 */
   tickLive() {
     this.refreshProgressBar();
+    this.refreshFocusHUD();
     /* v2.5：当前激活文件若是章节 → 累计该章打开时长；60 秒内有敲字算码字时长；专注计时中算专注时长。
        偷懒时间 = 打开时长 − 码字时长（展示时计算，不重复记）。 */
     try {
@@ -1170,89 +1231,50 @@ class NovelWriterStudio extends Plugin {
       ' · 速度 ' + pace + ' 字/分' + (this.focusState.active ? ' · ⏱ ' + fmtDur(this.focusElapsed()) : '');
   }
 
-  /* ========== v2.2：悬浮快捷符号栏（可拖动 / 可收起 / 位置记忆） ========== */
-  buildSymbolBar() {
-    if (this.symbolBarEl) { this.symbolBarEl.remove(); this.symbolBarEl = null; }
-    if (this.settings.symbolBar === false) return;
-    const bar = el('div', 'nws-symbar');
-    bar.id = 'nws-symbar';
-    if (this.settings.symbolBarCollapsed) bar.classList.add('collapsed');
-    const pos = this.settings.symbolBarPos;
-    if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
-      bar.style.left = pos.x + 'px'; bar.style.top = pos.y + 'px'; bar.style.right = 'auto';
+  /* ---------- v2.11：专注模式右下角实时统计 HUD ---------- */
+  buildFocusHUD() {
+    let h = document.getElementById('nws-focus-hud');
+    if (!h) { h = el('div'); h.id = 'nws-focus-hud'; document.body.appendChild(h); }
+    this.hudEl = h;
+    h.innerHTML =
+      '<div class="nws-hud-hd">写作实况</div>' +
+      '<div class="nws-hud-row"><span>打字速度</span><b data-k="pace">0</b></div>' +
+      '<div class="nws-hud-row"><span>码字时长</span><b data-k="type">0秒</b></div>' +
+      '<div class="nws-hud-row"><span>偷懒时长</span><b data-k="idle">0秒</b></div>' +
+      '<div class="nws-hud-row"><span>专注时长</span><b data-k="focus">0秒</b></div>' +
+      '<div class="nws-hud-row"><span>已码字数</span><b data-k="words">0 字</b></div>' +
+      '<div class="nws-hud-row"><span>完成度</span><b data-k="pct">0%</b></div>';
+    h.style.display = 'none';
+  }
+  /* 每秒 / 打字时刷新；仅在专注模式（focus）激活时显示 */
+  refreshFocusHUD() {
+    const h = this.hudEl;
+    if (!h) return;
+    const s = this.focusState;
+    if (!s || !s.active || s.mode !== 'focus') { h.style.display = 'none'; return; }
+    h.style.display = '';
+    const f = this.app.workspace.getActiveFile();
+    /* 本章字数（优先实时文本 → 缓存 → 异步读） */
+    let words = 0;
+    if (f && f.extension === 'md') {
+      if (this.liveText != null && this._livePath === f.path) words = countWords(this.liveText);
+      else if (this.wordCache[f.path] != null) words = this.wordCache[f.path];
+      else {
+        this.app.vault.cachedRead(f).then((t) => { this.wordCache[f.path] = countWords(t); this.refreshFocusHUD(); }).catch(() => {});
+      }
     }
-    /* 头部（拖动把手 + 收起按钮） */
-    const head = el('div', 'nws-symbar-h');
-    head.appendChild(el('span', 'nws-symbar-grip', '⠿'));
-    head.appendChild(el('span', 'nws-symbar-title', '符号'));
-    const fold = el('button', 'nws-symbar-fold', this.settings.symbolBarCollapsed ? '▸' : '▾');
-    fold.title = '收起/展开';
-    fold.addEventListener('click', (e) => { e.stopPropagation(); this.toggleSymbolBar(); });
-    head.appendChild(fold);
-    bar.appendChild(head);
-    /* 内容 */
-    const body = el('div', 'nws-symbar-body');
-    SYMBOL_GROUPS.forEach((g) => {
-      const row = el('div', 'nws-symbar-row');
-      row.appendChild(el('span', 'nws-symbar-label', g.name));
-      g.items.forEach((sym) => {
-        const b = el('button', 'nws-sym', sym);
-        b.title = '插入「' + sym + '」';
-        b.addEventListener('click', (e) => { e.stopPropagation(); this.insertSymbol(sym); });
-        row.appendChild(b);
-      });
-      body.appendChild(row);
-    });
-    bar.appendChild(body);
-    document.body.appendChild(bar);
-    this.symbolBarEl = bar;
-    this._makeSymbolBarDraggable(bar, head);
-  }
-  _makeSymbolBarDraggable(bar, handle) {
-    let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
-    handle.addEventListener('mousedown', (e) => {
-      if ((e.target).classList && (e.target).classList.contains('nws-symbar-fold')) return;
-      dragging = true;
-      const r = bar.getBoundingClientRect();
-      sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
-      bar.style.left = r.left + 'px'; bar.style.top = r.top + 'px'; bar.style.right = 'auto';
-      bar.classList.add('dragging');
-      e.preventDefault();
-    });
-    const move = (e) => {
-      if (!dragging) return;
-      const nx = Math.max(0, Math.min(window.innerWidth - bar.offsetWidth, ox + e.clientX - sx));
-      const ny = Math.max(0, Math.min(window.innerHeight - 40, oy + e.clientY - sy));
-      bar.style.left = nx + 'px'; bar.style.top = ny + 'px';
-    };
-    const up = () => {
-      if (!dragging) return;
-      dragging = false; bar.classList.remove('dragging');
-      const r = bar.getBoundingClientRect();
-      this.settings.symbolBarPos = { x: Math.round(r.left), y: Math.round(r.top) };
-      this.saveNow();
-    };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-    this._symDragCleanup = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
-  }
-  toggleSymbolBar() {
-    this.settings.symbolBarCollapsed = !this.settings.symbolBarCollapsed;
-    if (this.symbolBarEl) this.symbolBarEl.classList.toggle('collapsed', this.settings.symbolBarCollapsed);
-    const f = this.symbolBarEl && this.symbolBarEl.querySelector('.nws-symbar-fold');
-    if (f) f.textContent = this.settings.symbolBarCollapsed ? '▸' : '▾';
-    this.saveNow();
-  }
-  insertSymbol(sym) {
-    const view = this.app.workspace.getActiveViewOfType ? this.app.workspace.getActiveViewOfType(obsidian.MarkdownView) : null;
-    let editor = null;
-    if (view && view.editor) editor = view.editor;
-    if (!editor) {
-      const active = this.app.workspace.activeEditor;
-      if (active && active.editor) editor = active.editor;
-    }
-    if (!editor) { new Notice('请先打开一篇正文'); return; }
-    try { editor.replaceSelection(sym); } catch (e) { new Notice('插入失败：' + e.message); }
+    const target = f ? this.targetOf(f.path) : 0;
+    const pct = Math.min(100, target > 0 ? Math.round(words / target * 100) : 0);
+    /* 打字/摸鱼时长来自本章计时：active=码字时长，open-active=摸鱼 */
+    const tm = f ? this.chapterTiming(f.path) : { open: 0, active: 0 };
+    const idle = Math.max(0, (tm.open || 0) - (tm.active || 0));
+    const set = (k, v) => { const n = h.querySelector('[data-k="' + k + '"]'); if (n) n.textContent = v; };
+    set('pace', this.pacePerMinute() + ' 字/分');
+    set('type', fmtDur(tm.active || 0));
+    set('idle', fmtDur(idle));
+    set('focus', fmtDur(this.focusElapsed() || 0));
+    set('words', fmt(words) + ' 字');
+    set('pct', pct + '%');
   }
 
   /* ---------- 专注壁纸 ---------- */
@@ -1304,8 +1326,10 @@ class NovelWriterStudio extends Plugin {
     } catch (e) {}
   }
 
-  /* ---------- v2.8 打字音效：每次敲键响一下（节流 25ms 防连响） ---------- */
-  playTypeSound() {
+  /* ---------- v2.8 打字音效：每次敲键响一下（节流 25ms 防连响）
+       v2.11：默认静音 + 仅在专注/番茄钟会话中才响；force=true 供设置里试听 ---------- */
+  playTypeSound(force) {
+    if (!force && !(this.focusState && this.focusState.active)) return; // 非专注会话：一律静音
     const id = this.settings.typeSound;
     if (!id || id === 'off') return;
     const now = Date.now();
@@ -1397,6 +1421,11 @@ class NovelWriterStudio extends Plugin {
   /* ---------- 专注会话（专注模式 / 番茄钟共用计时） ---------- */
   startFocusSession(mode, seconds) {
     this.stopFocusSession(true);
+    /* v2.13：番茄钟开始计数（完成率统计） */
+    if (mode === 'work') {
+      const pm = this.data.pomo = this.data.pomo || { started: 0, completed: 0 };
+      pm.started++;
+    }
     this.focusState = {
       active: true, mode, seconds: 0, paused: false, left: seconds, startedAt: Date.now(),
       wallpaper: this.settings.focusWallpaper, sound: this.settings.focusSound,
@@ -1406,6 +1435,7 @@ class NovelWriterStudio extends Plugin {
       /* v2.8：专注模式进入禅状态（全屏+隐藏侧边栏）；番茄钟计时不动界面 */
       if (this.settings.focusFullscreen !== false) this.enterFocusZen();
       this.startSound(this.settings.focusSound);
+      this.refreshFocusHUD();
     }
     this.focusState.timer = setInterval(() => {
       const s = this.focusState;
@@ -1430,6 +1460,11 @@ class NovelWriterStudio extends Plugin {
   finishFocusSession() {
     const s = this.focusState;
     const mode = s.mode;
+    /* v2.13：番茄钟完成计数 */
+    if (mode === 'work') {
+      const pm = this.data.pomo = this.data.pomo || { started: 0, completed: 0 };
+      pm.completed++;
+    }
     this.data.focusSessions.push({ ts: Date.now(), mode, seconds: s.seconds || 0 });
     if (this.data.focusSessions.length > 500) this.data.focusSessions.splice(0, this.data.focusSessions.length - 500);
     this.stopFocusSession(false);
@@ -1444,6 +1479,7 @@ class NovelWriterStudio extends Plugin {
     this.exitFocusZen();
     this.clearFocusWallpaper();
     this.focusState = { active: false, wallpaper: '', sound: null, timer: null, endAt: 0, seconds: 0, paused: false, left: 0, mode: '' };
+    if (this.hudEl) this.hudEl.style.display = 'none';
     this.scheduleSave();
     if (!silent) new Notice('专注已结束');
     this.refreshProgressBar();
@@ -2043,24 +2079,6 @@ class NovelWriterStudio extends Plugin {
       new AnnotationModal(this.app, this, this.app.workspace.getActiveFile().path, sel.trim(), from, to).open();
     });
     reg('focus-toggle', '开始/结束专注', () => this.focusState.active ? this.stopFocusSession() : (new FocusModal(this.app, this, 'focus').open()));
-    /* v2.9：模糊搜设定库 + 待查待改清单 */
-    reg('search-library', '模糊搜索设定库（// 触发器同款）', () => {
-      new FuzzyPickModal(this.app, this, { scope: 'all', title: '🔎 模糊搜索设定库', placeholder: '输入任意几个字模糊搜索…（名称/别名/内容）' }, (pick) => {
-        if (pick && pick.ent) this.openEntityFile(pick.ent.id);
-      }).open();
-    });
-    reg('search-chars', '搜索角色（@@ 触发器同款）', () => {
-      new FuzzyPickModal(this.app, this, { scope: 'char', title: '🔍 搜索角色', placeholder: '输入名字/别名模糊搜索角色…' }, (pick) => {
-        if (pick && pick.ent) this.openEntityFile(pick.ent.id);
-      }).open();
-    });
-    reg('open-todo', '打开待查待改清单（？？/！！标记汇总表）', async () => {
-      await this.writeTodoFile();
-      const f = this.app.vault.getAbstractFileByPath(normalizePath(this.settings.todoFile || '大纲/待查待改清单.md'));
-      if (f instanceof TFile) await this.app.workspace.getLeaf('tab').openFile(f);
-      else new Notice('暂无清单文件，去正文输入 ？？要查什么？？ 自动生成');
-    });
-    reg('write-todo', '立即重建待查待改清单', async () => { await this.writeTodoFile(); new Notice('待查待改清单已更新'); });
     reg('sync-appearances', '立即刷新设定笔记的出场章节统计', async () => { await this.syncEntityAppearances(); new Notice('出场章节统计已更新'); });
     /* v2.2：选字操作的命令面板兜底（右键菜单失效时可用，也可绑快捷键） */
     const selCmd = (id, name, fn) => this.addCommand({
@@ -2110,11 +2128,6 @@ class NovelWriterStudio extends Plugin {
           } catch (e) { /* 忽略 */ }
           new AnnotationModal(p.app, p, file ? file.path : '', text, from, to).open();
         }));
-      /* v2.9：选中文字标注 待查资料 / 待修改（自动汇总到待查待改清单） */
-      menu.addItem((item) => item.setTitle('🔍 标注待查资料（？？）').setIcon('search')
-        .onClick(() => { try { editor.replaceSelection('？？' + text + '？？'); } catch (e) { new Notice('标注失败'); } }));
-      menu.addItem((item) => item.setTitle('✏️ 标注待修改（！！）').setIcon('pencil')
-        .onClick(() => { try { editor.replaceSelection('！！' + text + '！！'); } catch (e) { new Notice('标注失败'); } }));
       menu.addSeparator();
       QUICK_CLASSIFY.forEach((q) => {
         menu.addItem((item) => item.setTitle(q.emoji + ' 设为' + q.type).setIcon('tag')
@@ -2200,7 +2213,7 @@ class NovelWriterStudio extends Plugin {
         '<span class="t">' + escapeHtml(grp) + ' · ' + escapeHtml(entity.type || '') + '</span></div>' +
         '<div class="d nws-hover-content">' + escapeHtml(content || entity.desc || '（尚未填写具体内容）') + '</div>' +
         '<div class="f"><span>别名：' + escapeHtml((entity.aliases || []).join('、') || '无') + '</span><span>出现 ' + pe.total + ' 次</span></div>' +
-        '<div class="f" style="border:none;padding-top:3px"><span>首次：' + escapeHtml(pe.first || '—') + '</span><span class="nws-lnk">点击打开设定 →</span></div>';
+        '<div class="f" style="border:none;padding-top:3px"><span>首次：' + escapeHtml(pe.first || '—') + '</span><span class="nws-lnk">点击打开 · 正文单击设定词即可跳转 →</span></div>';
     };
     render(this.entityContentPreview(entity));
     /* 异步补充文件内容预览（若已缓存则立即刷新） */
@@ -2285,63 +2298,6 @@ class NovelWriterStudio extends Plugin {
     }, 350);
   }
 
-  /* ---------- v2.9：？？待查资料 / ！！待修改 标记体系 ---------- */
-  /* 扫描全文标记：？？内容？？（或 ??xx??）→ 待查资料；！！内容！！（或 !!xx!!）→ 待修改 */
-  scanTodoMarks(text) {
-    const items = [];
-    const push = (type, content, from) => { if (content && content.trim()) items.push({ type, content: content.trim(), from: from || 0 }); };
-    let m;
-    const reQ = /(？{2}|\?{2})([^？?\n]{1,200}?)(？{2}|\?{2})/g;
-    while ((m = reQ.exec(text)) !== null) push('query', m[2], m.index);
-    const reF = /(！{2}|!{2})([^！!\n]{1,200}?)(！{2}|!{2})/g;
-    while ((m = reF.exec(text)) !== null) push('fix', m[2], m.index);
-    items.sort((a, b) => a.from - b.from);
-    return items;
-  }
-  /* 当前文件标记与数据同步（删掉正文标记，表格里也消失） */
-  collectTodos(path, text) {
-    if (!path) return;
-    try {
-      const found = this.scanTodoMarks(text);
-      const oldList = (this.data.todos || []).filter((t) => t.path === path);
-      const byKey = Object.create(null);
-      oldList.forEach((t) => { byKey[t.type + '|' + t.content] = t; });
-      const items = found.map((f) => byKey[f.type + '|' + f.content] || { id: uid(), type: f.type, content: f.content, path, created: Date.now() });
-      const sig = items.map((t) => t.id).join(',');
-      if (sig === oldList.map((t) => t.id).join(',')) return;
-      this.data.todos = (this.data.todos || []).filter((t) => t.path !== path).concat(items);
-      this.scheduleSave();
-      this.scheduleTodoWrite();
-    } catch (e) { /* 忽略 */ }
-  }
-  /* 待查待改清单 → md 表格文件（放目录里，用表格组织） */
-  async writeTodoFile() {
-    try {
-      const fp = normalizePath(this.settings.todoFile || '大纲/待查待改清单.md');
-      const dir = fp.indexOf('/') >= 0 ? fp.slice(0, fp.lastIndexOf('/')) : '';
-      if (dir) await this.ensureFolder(dir);
-      const todos = (this.data.todos || []).slice().sort((a, b) => (a.type === b.type ? a.created - b.created : (a.type === 'query' ? -1 : 1)));
-      const typeName = { query: '🔍 待查资料', fix: '✏️ 待修改' };
-      const rows = todos.map((t) => {
-        const f = this.app.vault.getAbstractFileByPath(t.path);
-        const name = f ? f.basename : String(t.path || '').split('/').pop().replace(/\.md$/, '');
-        const link = t.path ? '[[' + String(t.path).replace(/\.md$/, '') + '|' + name + ']]' : '—';
-        return '| ' + (typeName[t.type] || t.type) + ' | ' + String(t.content).replace(/\|/g, '｜').replace(/\n/g, ' ') + ' | ' + link + ' | ' + stampFrom(t.created) + ' |';
-      });
-      const head = '# 待查待改清单\n\n> 自动生成：正文里用 ？？内容？？ 标注待查资料、！！内容！！ 标注待修改；删除正文标记后本表自动同步删除。\n\n| 类型 | 内容 | 所在章节 | 时间 |\n| --- | --- | --- | --- |\n';
-      const body = rows.length ? rows.join('\n') : '| — | （暂无标记，去正文里输入 ？？要查什么？？ 试试） | — | — |';
-      const content = head + body + '\n';
-      const old = this.app.vault.getAbstractFileByPath(fp);
-      if (old instanceof TFile) {
-        let cur = '';
-        try { cur = await this.app.vault.read(old); } catch (e) {}
-        if (cur !== content) await this.app.vault.modify(old, content);
-      } else {
-        await this.app.vault.create(fp, content);
-      }
-    } catch (e) { console.error('[小说写作台] 待查待改清单写入失败:', e); }
-  }
-
   /* ---------- v2.9.1：设定笔记「出场章节」自动统计 ---------- */
   /* 生成某设定的出场章节表格（章节按分卷/顺序排序，链接可点击跳转） */
   appearSection(entityId) {
@@ -2393,15 +2349,31 @@ class NovelWriterStudio extends Plugin {
         this.decorations = this.build();
         this._move = (e) => this.onMove(e);
         this._leave = () => plugin.hideHover();
+        this._down = (e) => { this._downX = e.clientX; this._downY = e.clientY; };
+        this._click = (e) => this.onClick(e);
         view.dom.addEventListener('mousemove', this._move);
         view.dom.addEventListener('mouseleave', this._leave);
+        view.dom.addEventListener('mousedown', this._down);
+        view.dom.addEventListener('click', this._click);
+      }
+      /* v3.0：点击正文设定词 → 直接打开该设定笔记
+         默认单击即跳；拖动选字（mousedown→click 位移>4px）不触发，避免打断编辑。
+         设置 entityClickJump=false 时退回仅 Ctrl/Cmd+点击。*/
+      onClick(e) {
+        const moved = Math.abs(e.clientX - (this._downX ?? e.clientX)) + Math.abs(e.clientY - (this._downY ?? e.clientY));
+        if (moved > 4) return; // 拖动选字，不跳
+        const singleClick = plugin.settings.entityClickJump !== false;
+        if (!singleClick && !(e.ctrlKey || e.metaKey)) return;
+        const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
+        if (pos == null) return;
+        const m = (this.mentions || []).find((x) => pos >= x.from && pos < x.to);
+        if (m) { e.preventDefault(); plugin.openEntityFile(m.entity.id); plugin.hideHover(); }
       }
       update(u) {
         if (u.docChanged) {
           /* v2.8：打字音效——真实敲键才响一下 */
           plugin.playTypeSound();
           if (plugin.settings.autoCollectBracket && !plugin.capturing) this.detectCapture(u);
-          if (plugin.settings.dunhaoSearch !== false && !plugin.searching) this.detectDunhao(u);
           /* v2.1 码字统计：只统计正文目录下文件，按字数增量记账 */
           const f = plugin.app.workspace.getActiveFile();
           const bodyDir = normalizePath(plugin.settings.folderBody || '正文');
@@ -2413,66 +2385,11 @@ class NovelWriterStudio extends Plugin {
             plugin.liveCounts[f.path] = now;
             plugin.liveText = text; plugin._livePath = f.path;
             if (delta > 0) plugin.recordTyping(f.path, delta);
+            else if (delta < 0) plugin.recordDeletion(-delta);
             else plugin.refreshProgressBar();
-          }
-          /* v2.9：？？/！！ 标记自动收集 → 待查待改清单 */
-          try { plugin.collectTodos(f ? f.path : '', u.state.doc.toString()); } catch (e) {}
-          /* v2.9：@@ 搜角色、// 模糊搜设定库（与 、、 搜设定同机制） */
-          if (!plugin.searching) {
-            const atEnd = this.detectToken(u, '@@');
-            if (atEnd >= 0) this.openTriggerPick(u, atEnd, { scope: 'char', title: '🔍 搜索角色', placeholder: '输入名字/别名模糊搜索角色…' });
-            const slEnd = this.detectToken(u, '//');
-            if (slEnd >= 0) this.openTriggerPick(u, slEnd, { scope: 'all', title: '🔎 模糊搜索设定库', placeholder: '输入任意几个字模糊搜索…（名称/别名/内容）' });
           }
         }
         if (u.docChanged || u.selectionSet || u.viewportChanged || this.version !== plugin.entityVersion) this.decorations = this.build();
-      }
-      /* v2.9：检测本次输入是否以某标记结尾（@@ // 、、 等），返回标记结束位置 */
-      detectToken(u, token) {
-        let endPos = -1;
-        u.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
-          const s = inserted.toString();
-          if (s.endsWith(token)) endPos = fromB + s.length;
-        });
-        return endPos;
-      }
-      /* 触发器 → 弹出模糊搜索弹窗，选中后替换掉触发符 */
-      openTriggerPick(u, endPos, opts) {
-        const startPos = endPos - 2;
-        plugin.searching = true;
-        try {
-          const view = u.view;
-          new FuzzyPickModal(plugin.app, plugin, opts, (pick) => {
-            setTimeout(() => {
-              try {
-                view.dispatch({ changes: { from: startPos, to: endPos }, selection: { anchor: startPos + (pick ? pick.name.length : 0) } });
-              } catch (e) { /* 忽略 */ }
-              plugin.searching = false;
-            }, 0);
-          }, () => { plugin.searching = false; }).open();
-        } catch (e) { plugin.searching = false; }
-      }
-      /* 输入「、、」→ 弹出设定库搜索，选择后替换掉这两个顿号 */
-      detectDunhao(u) {
-        let endPos = -1;
-        u.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
-          const s = inserted.toString();
-          if (s.endsWith('、、')) endPos = fromB + s.length;
-        });
-        if (endPos < 0) return;
-        const startPos = endPos - 2;
-        plugin.searching = true;
-        try {
-          new SettingPickModal(plugin.app, plugin, (pick) => {
-            const view = u.view;
-            setTimeout(() => {
-              try {
-                view.dispatch({ changes: { from: startPos, to: startPos + 2 }, selection: { anchor: startPos + (pick ? pick.name.length : 0) } });
-              } catch (e) { /* 忽略 */ }
-              plugin.searching = false;
-            }, 0);
-          }, () => { plugin.searching = false; }).open();
-        } catch (e) { plugin.searching = false; }
       }
       detectCapture(u) {
         let closePos = -1;
@@ -2533,14 +2450,13 @@ class NovelWriterStudio extends Plugin {
           this.mentions = plugin.mentionRanges(text);
           for (const r of this.mentions) {
             const e = r.entity;
-            const emoji = plugin.settings.entityEmoji === false ? '' : typeEmoji(e.type);
-            /* 有颜色 → 该色字 + 加粗；无颜色 → 加粗 + 下划线 */
+            /* v2.11：正文纯净无 emoji——不在装饰属性里写入任何类型图标 */
             const colorClass = hasEntityColor(e) ? ('nws-colored nws-c' + (e.color % 6)) : 'nws-nocolor';
             ranges.push({
               from: r.from, to: r.to, kind: 'entity',
               deco: Decoration.mark({
                 class: 'nws-entity ' + colorClass,
-                attributes: { 'data-nws-emoji': emoji, 'title': emoji + ' ' + String(e.name || '') + (e.type ? ' · ' + e.type : '') }
+                attributes: { 'title': String(e.name || '') + (e.type ? ' · ' + e.type : '') }
               })
             });
           }
@@ -2597,17 +2513,9 @@ class NovelWriterStudio extends Plugin {
             this.annotRanges.push({ from: idx, to: idx + a.quote.length, annot: a });
           }
         }
-        /* v2.9：？？待查资料 / ！！待修改 底纹（含标记符整体着色） */
-        if (cf) {
-          let tm;
-          const reQ = /(？{2}|\?{2})([^？?\n]{1,200}?)(？{2}|\?{2})/g;
-          while ((tm = reQ.exec(text)) !== null) ranges.push({ from: tm.index, to: tm.index + tm[0].length, kind: 'todo', deco: Decoration.mark({ class: 'nws-todo nws-todo-q', attributes: { title: '🔍 待查资料' } }) });
-          const reF = /(！{2}|!{2})([^！!\n]{1,200}?)(！{2}|!{2})/g;
-          while ((tm = reF.exec(text)) !== null) ranges.push({ from: tm.index, to: tm.index + tm[0].length, kind: 'todo', deco: Decoration.mark({ class: 'nws-todo nws-todo-f', attributes: { title: '✏️ 待修改' } }) });
-        }
-        /* v2.7：码字里程碑——每满 step 字，在该行右侧标注（500/1000/1500…） */
+        /* 码字里程碑——每满 300 字，在该行右侧标注（300/600/900…） */
         if (plugin.settings.milestoneMark !== false) {
-          const stepSize = Math.max(100, Number(plugin.settings.milestoneStep) || 500);
+          const stepSize = Math.max(100, Number(plugin.settings.milestoneStep) || 300);
           let cum = 0, next = stepSize;
           for (let n = 1; n <= state.doc.lines; n++) {
             const ln = state.doc.line(n);
@@ -2634,6 +2542,8 @@ class NovelWriterStudio extends Plugin {
       destroy() {
         this.view.dom.removeEventListener('mousemove', this._move);
         this.view.dom.removeEventListener('mouseleave', this._leave);
+        this.view.dom.removeEventListener('mousedown', this._down);
+        this.view.dom.removeEventListener('click', this._click);
         plugin.hideHover(); plugin.hideAnnotHover();
       }
     }, { decorations: (v) => v.decorations });
@@ -2926,7 +2836,7 @@ class EntitiesView extends ItemView {
       '<div class="nws-sp"></div>' +
       '<button class="nws-btn" data-act="openroot" title="打开设定文件夹">📁 设定目录</button>' +
       '<button class="nws-btn pri" data-act="add">🖋️ 新建设定（选大类模板）</button></div>' +
-      '<div class="nws-psub">6 大类：世界观总纲 · 人物库 · 角色关系库 · 地理/势力库 · 力量或规则库 · 剧情大纲+伏笔库，另设「独立」收纳语言风格与自定义 · 每条设定即 设定/ 下的同名 md 笔记（含模板/绑定）</div>' +
+      '<div class="nws-psub">6 大类：世界观总纲 · 人物库 · 角色关系库 · 地理/势力库 · 力量或规则库 · 剧情大纲+伏笔库，另设「独立」收纳语言风格与自定义 · 每条设定按大类存入 设定/&lt;大类&gt;/ 下的同名 md 笔记（含模板/绑定）</div>' +
       '<input class="nws-search" placeholder="搜索设定…" value="' + escapeHtml(this.q) + '">' +
       '<div class="nws-filters nws-groupbar">' + groupBtns + '</div>' +
       '<div class="nws-filters nws-colorbar"><span class="nws-clabel">颜色</span>' + colorBtns + '</div></div>' +
@@ -3754,76 +3664,6 @@ class SettingPickModal extends Modal {
   onClose() { this.contentEl.empty(); if (!this.picked && this.onCancel) this.onCancel(); }
 }
 
-/* v2.9：模糊匹配打分——子串命中高分，按字顺序出现中分，未命中 -1 */
-function fuzzyScore(text, q) {
-  text = String(text || '').toLowerCase(); q = String(q || '').trim().toLowerCase();
-  if (!q) return 0;
-  const idx = text.indexOf(q);
-  if (idx >= 0) return 1000 - idx;
-  let ti = 0;
-  for (const ch of q) { ti = text.indexOf(ch, ti); if (ti < 0) return -1; ti++; }
-  return 400;
-}
-
-/* v2.9：模糊搜索弹窗（设定库全文模糊搜；scope='char' 只搜角色） */
-class FuzzyPickModal extends Modal {
-  constructor(app, plugin, opts, onPick, onCancel) {
-    super(app); this.p = plugin; this.opts = opts || {};
-    this.onPick = onPick; this.onCancel = onCancel; this.q = '';
-  }
-  buildItems() {
-    const p = this.p, scope = this.opts.scope || 'all';
-    const items = [];
-    if (scope !== 'char') p.data.plots.forEach((pl) => items.push({ kind: 'plot', type: '剧情', name: pl.name, aliases: [], desc: pl.desc || '' }));
-    p.data.entities.forEach((e) => {
-      if (scope === 'char' && !(/人物|角色|关系/.test(e.type || '') || (e.group || '') === '人物库')) return;
-      items.push({ kind: 'entity', type: e.type, name: e.name, aliases: e.aliases || [], desc: e.desc || '', ent: e });
-    });
-    return items;
-  }
-  search(q) {
-    let arr = this.buildItems();
-    if (!q.trim()) return arr.slice(0, 80);
-    const scored = [];
-    arr.forEach((it) => {
-      let best = -1, where = '';
-      const sN = fuzzyScore(it.name, q); if (sN >= 0) { best = sN; where = ''; }
-      (it.aliases || []).forEach((a) => { const s = fuzzyScore(a, q) - 5; if (s >= 0 && s > best) { best = s; where = '别名 ' + a; } });
-      const sD = fuzzyScore(it.desc, q);
-      if (sD >= 0 && sD + 50 > best) { best = sD + 50; where = String(it.desc || '').slice(0, 50); }
-      if (best >= 0) scored.push(Object.assign({}, it, { _score: best, _where: where }));
-    });
-    scored.sort((a, b) => b._score - a._score);
-    return scored.slice(0, 80);
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl('h3', { text: this.opts.title || '模糊搜索设定库' });
-    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = this.opts.placeholder || '输入任意几个字模糊搜索…'; inp.style.width = '100%';
-    const list = contentEl.createDiv('nws-suggest-list');
-    const render = () => {
-      list.empty();
-      const arr = this.search(this.q);
-      arr.forEach((it) => {
-        const row = list.createDiv('nws-suggest-row');
-        row.createSpan({ text: (it.kind === 'plot' ? '🧩' : typeEmoji(it.type)) + ' ' + it.name });
-        const t = row.createSpan({ text: (it.kind === 'plot' ? '情节' : (it.type || '')) + (it._where ? ' · ' + it._where : '') });
-        t.style.cssText = 'margin-left:auto;font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%';
-        row.addEventListener('click', () => { this.picked = true; this.onPick(it); this.close(); });
-      });
-      if (!list.children.length) list.createEl('div', { text: '无匹配，可直接关闭继续输入' }).style.cssText = 'font-size:11px;color:var(--text-muted);padding:8px';
-    };
-    inp.addEventListener('input', (e) => { this.q = e.target.value; render(); });
-    inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.close();
-      else if (e.key === 'Enter') { const first = list.querySelector('.nws-suggest-row'); if (first) first.click(); }
-    });
-    render();
-    setTimeout(() => inp.focus(), 30);
-  }
-  onClose() { this.contentEl.empty(); if (!this.picked && this.onCancel) this.onCancel(); }
-}
-
 /* 灵感处理弹窗：内容 / 状态 / 绑定设定（情节、人物等） */
 class InspirationEditModal extends Modal {
   constructor(app, plugin, note) { super(app); this.p = plugin; this.note = note; this.binds = note ? (note.bindings || []).slice() : []; }
@@ -3878,7 +3718,7 @@ class EntityCreateModal extends Modal {
   onOpen() {
     const { contentEl } = this, p = this.p;
     contentEl.createEl('h3', { text: '新建设定 · 选大类' });
-    const desc = contentEl.createEl('div', { text: '第 1 步选一个大类（每类有专属模板）→ 第 2 步填名称 → 创建。会在 设定/ 下生成同名 md 笔记，按模板补充即可。语言风格或自定义内容选「独立」。' });
+    const desc = contentEl.createEl('div', { text: '第 1 步选一个大类（每类有专属模板）→ 第 2 步填名称 → 创建。会在 设定/<大类>/ 下生成同名 md 笔记，按模板补充即可。语言风格或自定义内容选「独立」。' });
     desc.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:10px';
 
     /* ① 大类（v2.6 单纯大库版：无二级小库；若从右键带入了具体小库，则自动归到对应大类并沿用该小库模板） */
@@ -3954,7 +3794,7 @@ class EntityCreateModal extends Modal {
       const e = await p.addEntity(inp.value.trim(), type, chosenGroup);
       if (e) { e.color = chosenColor; await p.writeEntityFile(e, false); await p.saveNow(); p.entityVersion++; p.refreshViews(); }
       this.close();
-      if (e) { new Notice('已创建 设定/' + e.name + '.md（' + chosenGroup + '）'); p.openEntityFile(e.id); }
+      if (e) { new Notice('已创建 设定/' + groupFolderName(chosenGroup) + '/' + e.name + '.md'); p.openEntityFile(e.id); }
     };
     ok.addEventListener('click', submit);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -4105,7 +3945,7 @@ class EntityEditModal extends Modal {
 
 /* ================= v2.1 数据中心（热力图 / 码字统计） ================= */
 class StatsView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.days = 84; }
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.days = 365; this.gran = 'day'; }
   getViewType() { return VIEW_STATS; }
   getDisplayText() { return '写作台 · 数据中心'; }
   getIcon() { return 'chart-no-axes-column'; }
@@ -4121,8 +3961,12 @@ class StatsView extends ItemView {
       ['专注时长', fmtDur(today.focus), '🎯'],
       ['实时速度', pace + ' 字/分', '⚡'],
     ].map((kv) => '<div class="nws-dc-card"><div class="k">' + kv[2] + ' ' + kv[0] + '</div><div class="v">' + kv[1] + '</div></div>').join('');
-    /* 热力图：最近 N 天 */
+    /* 热力图：84 天 / 365 天可切换 */
     const heat = this.heatmap(p, this.days);
+    const heatBtns = [84, 365].map((n) => '<button class="nws-fbtn' + (this.days === n ? ' on' : '') + '" data-heat="' + n + '">' + (n === 84 ? '3 个月' : '1 年') + '</button>').join('');
+    /* 图 1 粒度下拉：日 / 周 / 月 */
+    const granOpts = [['day', '日码字数（近 30 天）'], ['week', '周码字数（近 12 周）'], ['month', '月总字数（近 12 月）']];
+    const granSel = '<select class="dropdown nws-gran-sel">' + granOpts.map((o) => '<option value="' + o[0] + '"' + (this.gran === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
     /* 每日明细：最近 14 天 */
     const rows = [];
     for (let i = 0; i < 14; i++) {
@@ -4145,16 +3989,309 @@ class StatsView extends ItemView {
       '<div class="nws-psub">累计码字 ' + fmt(cumWords) + ' · 累计专注 ' + fmtDur(cumFocus) + ' · 数据随码字实时更新，保存在本地</div></div>' +
       '<div class="nws-dc">' +
       '<div class="nws-dc-cards">' + cards + '</div>' +
-      '<div class="nws-dc-sec"><h4>码字热力图（最近 ' + this.days + ' 天）</h4>' + heat +
+      /* 图 1：码字量（柱）+ 有效码字时长（折线）双轴同图，粒度可切 */
+      '<div class="nws-dc-sec"><h4>码字量与时长' + granSel + ' <span class="nws-dc-hint">柱 = 字数（左轴）· 折线 = 有效码字时长（右轴·分）</span></h4>' + this.comboChart(p, this.gran || 'day') + '</div>' +
+      /* 图 2：有效码字时长（单独一张） */
+      '<div class="nws-dc-sec"><h4>有效码字时长（近 14 天） <span class="nws-dc-hint">双色柱：码字时长 vs 专注时长</span></h4>' + this.durationChart(p, 14) + '</div>' +
+      /* 时间分布 */
+      '<div class="nws-dc-sec"><h4>时间分布 <span class="nws-dc-hint">你习惯在什么时候写 · 按小时段累计字数</span></h4>' + this.timeDistribution(p) + '</div>' +
+      /* 三组指标卡 */
+      '<div class="nws-kpi-grid">' +
+      '<div class="nws-kpi-col"><h4>码字稳定性</h4>' + this.kpiStability(p) + '</div>' +
+      '<div class="nws-kpi-col"><h4>效率</h4>' + this.kpiEfficiency(p) + '</div>' +
+      '<div class="nws-kpi-col"><h4>目标达成</h4>' + this.kpiGoals(p) + '</div>' +
+      '</div>' +
+      '<div class="nws-dc-sec"><h4>设定库使用 Top 10 <span class="nws-dc-hint">按全书出现次数 · 点击打开设定笔记</span></h4>' + this.entityTop10(p) + '</div>' +
+      '<div class="nws-dc-sec"><h4>码字热力图（最近 ' + (this.days === 84 ? '3 个月' : '1 年') + '）' +
+      '<span class="nws-heat-switch">' + heatBtns + '</span></h4>' + heat +
       '<div class="nws-heat-legend"><span>少</span>' + [0, 1, 2, 3, 4].map((i) => '<i class="h' + i + '"></i>').join('') + '<span>多</span></div></div>' +
+      '<div class="nws-dc-sec"><h4>内容更新 · 最近改动 <span class="nws-dc-hint">章节与设定笔记，按修改时间</span></h4>' + this.recentUpdates(p) + '</div>' +
       '<div class="nws-dc-sec"><h4>每日码字明细（最近 14 天）</h4>' +
       '<table class="nws-dc-table"><thead><tr><th>日期</th><th>字数</th><th>码字时长</th><th>专注</th><th>均速(字/分)</th></tr></thead><tbody>' + rows.join('') + '</tbody></table></div>' +
       '</div>';
     const root = setViewRoot(this, html);
     root.querySelector('[data-act="pomodoro"]').addEventListener('click', () => new FocusModal(this.app, p, 'pomodoro').open());
     root.querySelector('[data-act="focus"]').addEventListener('click', () => new FocusModal(this.app, p, 'focus').open());
+    root.querySelectorAll('[data-heat]').forEach((b) => b.addEventListener('click', () => { this.days = Number(b.getAttribute('data-heat')) || 365; this.render(); }));
+    root.querySelectorAll('[data-ent]').forEach((row) => row.addEventListener('click', () => {
+      const id = row.getAttribute('data-ent'); if (id) p.openEntityFile(id);
+    }));
+    root.querySelectorAll('[data-open]').forEach((row) => row.addEventListener('click', () => {
+      const path = row.getAttribute('data-open'); if (!path) return;
+      const f = p.app.vault.getAbstractFileByPath(path);
+      if (f) p.app.workspace.getLeaf('tab').openFile(f);
+    }));
+    const granEl = root.querySelector('.nws-gran-sel');
+    if (granEl) granEl.addEventListener('change', (e) => { this.gran = e.target.value; this.render(); });
+  }
+  /* 粒度聚合：day(近30天) / week(近12周,周一为起点) / month(近12月) → {k,w,secs,label} */
+  aggSeries(p, gran) {
+    const daily = p.data.daily || {};
+    const arr = [];
+    const push = (k, label, days) => {
+      let w = 0, secs = 0, has = false;
+      for (const kk of days) { const dd = daily[kk]; if (dd) { has = true; w += dd.words || 0; secs += dd.secs || 0; } }
+      arr.push({ k, label, w, secs, has });
+    };
+    const keysBetween = (fromD, toD) => { const out = []; const d = new Date(fromD); while (d <= toD) { out.push(dateKey(d)); d.setDate(d.getDate() + 1); } return out; };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    if (gran === 'month') {
+      for (let i = 11; i >= 0; i--) {
+        const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+        const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+        push(dateKey(d).slice(0, 7), (d.getMonth() + 1) + '月', keysBetween(d, i === 0 ? today : end));
+      }
+    } else if (gran === 'week') {
+      const monday = new Date(today); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+      for (let i = 11; i >= 0; i--) {
+        const s = new Date(monday); s.setDate(s.getDate() - i * 7);
+        const e = new Date(s); e.setDate(e.getDate() + 6);
+        push(dateKey(s), (s.getMonth() + 1) + '/' + s.getDate() + ' 周', keysBetween(s, i === 0 ? today : e));
+      }
+    } else {
+      this.dailySeries(p, 30).forEach((d) => { const dd = daily[d.k]; arr.push({ k: d.k, label: d.label, w: d.w, secs: (dd && dd.secs) || 0, has: !!dd }); });
+    }
+    return arr;
+  }
+  /* 图 1（合并）：柱 = 字数（左轴），折线 = 有效码字时长（右轴·分钟） */
+  comboChart(p, gran) {
+    const data = this.aggSeries(p, gran);
+    const W = 600, H = 170, PL = 40, PR = 44, PT = 16, PB = 22;
+    const maxW = Math.max(500, ...data.map((d) => d.w));
+    const maxS = Math.max(30, ...data.map((d) => d.secs / 60));
+    const iw = W - PL - PR, ih = H - PT - PB;
+    const n = data.length, step = iw / n, bw = Math.min(30, step * 0.6);
+    const yW = (v) => PT + ih - (v / maxW) * ih;
+    const yS = (v) => PT + ih - (v / maxS) * ih;
+    /* 网格（左轴字数 4 档） */
+    let grid = '';
+    for (let g = 0; g <= 4; g++) {
+      const gv = Math.round((maxW / 4) * g);
+      const gy = yW(gv);
+      grid += '<line x1="' + PL + '" y1="' + gy + '" x2="' + (W - PR) + '" y2="' + gy + '" stroke="var(--nws-line)" stroke-width="1"/>' +
+        '<text x="' + (PL - 5) + '" y="' + (gy + 3) + '" text-anchor="end" font-size="9" fill="var(--nws-ink2)">' + (gv >= 10000 ? (gv / 10000) + 'w' : (gv >= 1000 ? (gv / 1000) + 'k' : gv)) + '</text>';
+      const sv = Math.round((maxS / 4) * g);
+      grid += '<text x="' + (W - PR + 5) + '" y="' + (gy + 3) + '" font-size="9" fill="#d09a30">' + sv + '</text>';
+    }
+    let bars = '';
+    data.forEach((d, i) => {
+      const bx = PL + i * step + (step - bw) / 2;
+      const bh = Math.max(d.w > 0 ? 2 : 0, (d.w / maxW) * ih);
+      bars += '<rect x="' + (bx).toFixed(1) + '" y="' + yW(d.w).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="3" fill="var(--nws-accent)" opacity=".6"><title>' + d.k + '：' + fmt(d.w) + ' 字</title></rect>';
+    });
+    const pts = data.map((d, i) => (PL + i * step + step / 2).toFixed(1) + ',' + yS(d.secs / 60).toFixed(1)).join(' ');
+    let xl = '';
+    const tick = gran === 'day' ? 7 : (gran === 'week' ? 2 : 1);
+    data.forEach((d, i) => { if (i % tick === 0 || i === n - 1) xl += '<text x="' + (PL + i * step + step / 2) + '" y="' + (H - 6) + '" text-anchor="middle" font-size="9" fill="var(--nws-ink2)">' + d.label + '</text>'; });
+    const totW = data.reduce((s, d) => s + d.w, 0);
+    const totS = data.reduce((s, d) => s + d.secs, 0);
+    return '<div class="nws-chart-wrap"><svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="width:100%;height:' + H + 'px">' +
+      grid + bars +
+      '<polyline points="' + pts + '" fill="none" stroke="#d09a30" stroke-width="2" stroke-linejoin="round"/>' +
+      data.map((d, i) => '<circle cx="' + (PL + i * step + step / 2) + '" cy="' + yS(d.secs / 60) + '" r="2.2" fill="#d09a30"><title>' + d.k + '：' + fmtDur(d.secs) + '</title></circle>').join('') +
+      xl + '</svg>' +
+      '<div class="nws-chart-sum">合计 <b>' + fmt(totW) + '</b> 字 · 有效码字 <b>' + fmtDur(totS) + '</b> · 均速 <b>' + (totS > 0 ? Math.round(totW / (totS / 60)) : 0) + '</b> 字/分</div></div>';
+  }
+  /* 图 2（单独）：近 14 天有效码字时长——码字时长 vs 专注时长 双柱 */
+  durationChart(p, n) {
+    const daily = p.data.daily || {};
+    const days = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const dt = new Date(); dt.setDate(dt.getDate() - i);
+      const k = dateKey(dt);
+      const dd = daily[k] || {};
+      days.push({ k, label: (dt.getMonth() + 1) + '/' + dt.getDate(), secs: dd.secs || 0, focus: dd.focus || 0 });
+    }
+    const W = 600, H = 150, PL = 40, PR = 10, PT = 16, PB = 22;
+    const max = Math.max(600, ...days.map((d) => Math.max(d.secs, d.focus)));
+    const iw = W - PL - PR, ih = H - PT - PB;
+    const step = iw / n, bw = Math.min(11, step * 0.34);
+    let grid = '';
+    for (let g = 0; g <= 4; g++) {
+      const gv = Math.round((max / 4) * g), gy = PT + ih - (gv / max) * ih;
+      grid += '<line x1="' + PL + '" y1="' + gy + '" x2="' + (W - PR) + '" y2="' + gy + '" stroke="var(--nws-line)" stroke-width="1"/>' +
+        '<text x="' + (PL - 5) + '" y="' + (gy + 3) + '" text-anchor="end" font-size="9" fill="var(--nws-ink2)">' + (gv >= 3600 ? (gv / 3600) + '时' : Math.round(gv / 60) + '分') + '</text>';
+    }
+    let bars = '';
+    days.forEach((d, i) => {
+      const cx = PL + i * step + step / 2;
+      const h1 = Math.max(d.secs > 0 ? 2 : 0, (d.secs / max) * ih);
+      const h2 = Math.max(d.focus > 0 ? 2 : 0, (d.focus / max) * ih);
+      bars += '<rect x="' + (cx - bw - 1).toFixed(1) + '" y="' + (PT + ih - h1).toFixed(1) + '" width="' + bw + '" height="' + h1.toFixed(1) + '" rx="2" fill="var(--nws-accent)" opacity=".75"><title>' + d.k + ' 码字：' + fmtDur(d.secs) + '</title></rect>';
+      bars += '<rect x="' + (cx + 1).toFixed(1) + '" y="' + (PT + ih - h2).toFixed(1) + '" width="' + bw + '" height="' + h2.toFixed(1) + '" rx="2" fill="#6287A8" opacity=".85"><title>' + d.k + ' 专注：' + fmtDur(d.focus) + '</title></rect>';
+      if (i % 3 === 0 || i === n - 1) bars += '<text x="' + cx + '" y="' + (H - 6) + '" text-anchor="middle" font-size="9" fill="var(--nws-ink2)">' + d.label + '</text>';
+    });
+    const totS = days.reduce((s, d) => s + d.secs, 0), totF = days.reduce((s, d) => s + d.focus, 0);
+    return '<div class="nws-chart-wrap"><svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="width:100%;height:' + H + 'px">' + grid + bars + '</svg>' +
+      '<div class="nws-chart-sum"><i class="nws-lg-dot" style="background:var(--nws-accent)"></i> 码字 <b>' + fmtDur(totS) + '</b>　<i class="nws-lg-dot" style="background:#6287A8"></i> 专注 <b>' + fmtDur(totF) + '</b></div></div>';
+  }
+  /* 时间分布：凌晨/上午/下午/晚上 + 工作日/周末 */
+  timeDistribution(p) {
+    const daily = p.data.daily || {};
+    const seg = [0, 0, 0, 0]; // 凌晨0-6 上午6-12 下午12-18 晚上18-24
+    let wk = 0, we = 0, hasHours = false;
+    Object.keys(daily).forEach((k) => {
+      const dd = daily[k];
+      if (Array.isArray(dd.hours)) {
+        hasHours = true;
+        for (let h = 0; h < 24; h++) seg[Math.floor(h / 6)] += dd.hours[h] || 0;
+      }
+      wk += dd.wk || 0; we += dd.we || 0;
+    });
+    if (!hasHours && wk === 0 && we === 0) return '<div class="nws-dc-empty">时间分布从现在开始记录——写作时自动按小时段累计，写一会儿再回来看就有数据了。</div>';
+    const names = ['🌙 凌晨 0-6', '🌅 上午 6-12', '☀️ 下午 12-18', '🌃 晚上 18-24'];
+    const maxSeg = Math.max(1, ...seg);
+    const rows = seg.map((v, i) => '<div class="nws-seg-row"><span class="nm">' + names[i] + '</span>' +
+      '<span class="bar"><i style="width:' + Math.round((v / maxSeg) * 100) + '%"></i></span>' +
+      '<span class="ct">' + fmt(v) + ' 字</span></div>').join('');
+    const wkw = wk + we > 0 ? Math.round((wk / (wk + we)) * 100) : 50;
+    const dowRow = '<div class="nws-seg-row dow"><span class="nm">工作日</span><span class="bar split"><i style="width:' + wkw + '%"></i></span><span class="nm2">周末</span></div>' +
+      '<div class="nws-seg-sum">工作日 ' + fmt(wk) + ' 字（' + wkw + '%）· 周末 ' + fmt(we) + ' 字（' + (100 - wkw) + '%）</div>';
+    const best = seg.indexOf(Math.max(...seg));
+    return '<div class="nws-time-dist">' + rows + dowRow +
+      '<div class="nws-chart-sum">你最常在 <b>' + names[best].replace(/^\S+\s/, '') + '</b> 写作</div></div>';
+  }
+  /* KPI 卡片组装 */
+  kpiRow(label, value, sub) {
+    return '<div class="nws-kpi"><div class="l">' + label + '</div><div class="v">' + value + '</div>' + (sub ? '<div class="s">' + sub + '</div>' : '') + '</div>';
+  }
+  /* 码字稳定性：连续更新 / 断更次数 / 字数波动 */
+  kpiStability(p) {
+    const daily = p.data.daily || {};
+    const get = (off) => { const d = new Date(); d.setDate(d.getDate() - off); return (daily[dateKey(d)] || {}).words || 0; };
+    /* 连续更新：今天有产出从今天数，否则从昨天数 */
+    let streak = 0, start = get(0) > 0 ? 0 : (get(1) > 0 ? 1 : -1);
+    if (start >= 0) { let i = start; while (get(i) > 0) { streak++; i++; } }
+    /* 断更次数：近 30 天中 0 字天数（从首次记录日起算） */
+    let gaps = 0, recorded = 0;
+    for (let i = 0; i < 30; i++) { const w = get(i); if (w > 0) recorded++; else if (daily[dateKeyOf(i)] || (i < 30 && (30 - i) <= firstAge(daily))) gaps++; }
+    /* 字数波动：近 14 天产出日的标准差/均值 */
+    const ws = []; for (let i = 0; i < 14; i++) { const w = get(i); if (w > 0) ws.push(w); }
+    let cv = '—';
+    if (ws.length >= 3) {
+      const mean = ws.reduce((a, b) => a + b, 0) / ws.length;
+      const sd = Math.sqrt(ws.reduce((a, b) => a + (b - mean) * (b - mean), 0) / ws.length);
+      cv = Math.round((sd / mean) * 100) + '%';
+    }
+    return this.kpiRow('连续更新', streak + ' 天', streak >= 3 ? '🔥 状态在线' : '保持住') +
+      this.kpiRow('断更次数（30 天）', gaps + ' 次', recorded + ' 天有产出') +
+      this.kpiRow('字数波动（14 天）', cv, ws.length + ' 个产出日');
+    function firstAge(dl) { /* 首次记录距今天数：0 字但从未记录过的不算断更 */
+      const keys = Object.keys(dl).sort();
+      if (!keys.length) return 99;
+      const d0 = new Date(keys[0]); const d1 = new Date();
+      return Math.floor((d1 - d0) / 86400e3);
+    }
+    function dateKeyOf(off) { const d = new Date(); d.setDate(d.getDate() - off); return dateKey(d); }
+  }
+  /* 效率：有效写作时长占比 / 删除修改比例 / 卡文时长 / 番茄钟完成率 */
+  kpiEfficiency(p) {
+    let open = 0, active = 0;
+    Object.values(p.data.chapters || {}).forEach((m) => { const t = m && m.timing; if (t) { open += t.open || 0; active += t.active || 0; } });
+    const effPct = open > 0 ? Math.round((active / open) * 100) : 0;
+    let del = 0, wds = 0;
+    Object.values(p.data.daily || {}).forEach((d) => { del += d.del || 0; wds += d.words || 0; });
+    const delPct = (del + wds) > 0 ? Math.round((del / (del + wds)) * 100) : 0;
+    const stuck = Math.max(0, open - active);
+    const pm = p.data.pomo || { started: 0, completed: 0 };
+    const pomoPct = pm.started > 0 ? Math.round((pm.completed / pm.started) * 100) : 0;
+    return this.kpiRow('有效写作时长占比', effPct + '%', fmtDur(active) + ' / ' + fmtDur(open)) +
+      this.kpiRow('删除修改比例', delPct + '%', '删 ' + fmt(del) + ' · 写 ' + fmt(wds)) +
+      this.kpiRow('卡文/摸鱼时长', fmtDur(stuck), '打开但没写的时间') +
+      this.kpiRow('番茄钟完成率', pomoPct + '%', pm.completed + ' / ' + pm.started + ' 个');
+  }
+  /* 目标达成：日更目标完成率 / 月度完稿率 / 章节平均耗时 */
+  kpiGoals(p) {
+    const goal = Number(p.settings.dailyGoal) || 1000;
+    const daily = p.data.daily || {};
+    let hit = 0, rec = 0;
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const dd = daily[dateKey(d)];
+      if (dd && (dd.words > 0 || dd.secs > 0)) { rec++; if ((dd.words || 0) >= goal) hit++; }
+    }
+    const goalPct = rec > 0 ? Math.round((hit / rec) * 100) : 0;
+    /* 月度完稿率：本月写过字的章节中已定稿占比 */
+    const now = new Date(), monthPrefix = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    const chapters = (p.stats && p.stats.chapters) || [];
+    const timingMap = p.data.chapters || {};
+    let written = 0, done = 0;
+    chapters.forEach((c) => {
+      const t = (timingMap[c.path] || {}).timing;
+      if (t && (t.written > 0 || t.open > 0)) { written++; if (c.status === 3) done++; }
+    });
+    const finPct = written > 0 ? Math.round((done / written) * 100) : 0;
+    /* 章节平均耗时 */
+    let totOpen = 0, cnt = 0;
+    Object.values(timingMap).forEach((m) => { const t = m && m.timing; if (t && t.open > 60) { totOpen += t.open; cnt++; } });
+    const avgOpen = cnt > 0 ? Math.round(totOpen / cnt) : 0;
+    return this.kpiRow('日更目标完成率', goalPct + '%', '达标 ' + hit + '/' + rec + ' 天 · 目标 ' + fmt(goal) + ' 字') +
+      this.kpiRow('完稿率（本书）', finPct + '%', done + ' / ' + written + ' 章已定稿') +
+      this.kpiRow('章节平均耗时', cnt > 0 ? fmtDur(avgOpen) : '—', cnt + ' 章有计时');
+  }
+  /* 每日字数序列（最近 n 天，含今天） */
+  dailySeries(p, n) {
+    const arr = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const dt = new Date(); dt.setDate(dt.getDate() - i);
+      const k = dateKey(dt);
+      arr.push({ k, w: (p.data.daily[k] || {}).words || 0, label: (dt.getMonth() + 1) + '/' + dt.getDate() });
+    }
+    return arr;
+  }
+  entityTop10(p) {
+    const st = p.stats || { perEntity: {} };
+    const arr = Object.values(st.perEntity || {}).filter((pe) => pe && pe.entity && pe.total > 0);
+    if (!arr.length) return '<div class="nws-dc-empty">还没有设定在正文中出现过——去正文里写到角色/世界观的名字，这里就会出现条形统计。</div>';
+    arr.sort((a, b) => b.total - a.total);
+    const top = arr.slice(0, 10);
+    /* 与正文设定高亮同色（nws-c0..5），深浅两套随主题 */
+    const dark = document.body.classList.contains('theme-dark');
+    const COLORS = dark ? ['#E0A19B', '#A6C7AF', '#A4BED6', '#E0B57F', '#DCCB7E', '#BCAED0'] : ['#B5716B', '#6F9A7C', '#6287A8', '#B98448', '#B19A44', '#8E7BA9'];
+    const max = top[0].total || 1;
+    const rows = top.map((pe, i) => {
+      const e = pe.entity;
+      const pct = Math.max(6, Math.round((pe.total / max) * 100));
+      const color = hasEntityColor(e) ? COLORS[e.color % 6] : 'var(--nws-accent)';
+      return '<div class="nws-top-row" data-ent="' + escapeHtml(e.id) + '" title="点击打开设定笔记">' +
+        '<span class="rk">' + (i + 1) + '</span>' +
+        '<span class="nm">' + escapeHtml(e.name || '') + (e.type ? ' <i class="tp">' + escapeHtml(e.type) + '</i>' : '') + '</span>' +
+        '<span class="bar"><i style="width:' + pct + '%;background:' + color + '"></i></span>' +
+        '<span class="ct">' + fmt(pe.total) + ' 次</span></div>';
+    }).join('');
+    return '<div class="nws-top10">' + rows + '</div>';
+  }
+  /* 内容更新：最近改动的章节 + 设定笔记（按文件 mtime） */
+  recentUpdates(p) {
+    const items = [];
+    const push = (path, name, kind) => {
+      try {
+        const f = p.app.vault.getAbstractFileByPath(path);
+        if (f && f.stat && f.stat.mtime) items.push({ path, name, kind, mtime: f.stat.mtime });
+      } catch (e) { /* 忽略 */ }
+    };
+    (p.allChapters() || []).slice(0, 60).forEach((c) => push(c.path, c.title, '章节'));
+    (p.data.entities || []).forEach((e) => { if (e.file) push(e.file, e.name || String(e.file), e.type || '设定'); });
+    if (!items.length) return '<div class="nws-dc-empty">暂无章节与设定文件，先在目录里创建章节吧。</div>';
+    items.sort((a, b) => b.mtime - a.mtime);
+    const top = items.slice(0, 10);
+    const now = Date.now();
+    const rel = (ms) => {
+      const dt = Math.floor((now - ms) / 1000);
+      if (dt < 60) return '刚刚';
+      if (dt < 3600) return Math.floor(dt / 60) + ' 分钟前';
+      if (dt < 86400) return Math.floor(dt / 3600) + ' 小时前';
+      if (dt < 86400 * 30) return Math.floor(dt / 86400) + ' 天前';
+      return new Date(ms).toISOString().slice(0, 10);
+    };
+    const rows = top.map((it) => '<div class="nws-upd-row" data-open="' + escapeHtml(it.path) + '" title="点击打开">' +
+      '<span class="k ' + (it.kind === '章节' ? 'ch' : 'ent') + '">' + (it.kind === '章节' ? '📄 章节' : '🏷 设定') + '</span>' +
+      '<span class="nm">' + escapeHtml(it.name) + '</span>' +
+      '<span class="tm">' + rel(it.mtime) + '</span></div>').join('');
+    return '<div class="nws-updates">' + rows + '</div>';
   }
   heatmap(p, days) {
+    const small = days > 100;
     const cells = [];
     const end = new Date(); end.setHours(0, 0, 0, 0);
     const start = new Date(end); start.setDate(start.getDate() - (days - 1));
@@ -4162,7 +4299,10 @@ class StatsView extends ItemView {
     const gridStart = new Date(start); gridStart.setDate(gridStart.getDate() - gridStart.getDay());
     let cur = new Date(gridStart);
     const weeks = [];
+    let monthMarks = '';
+    let lastMonth = -1;
     while (cur <= end) {
+      if (small && cur.getDay() === 0 && cur.getMonth() !== lastMonth) { lastMonth = cur.getMonth(); monthMarks += '<span style="width:' + (weeks.length * 10) + 'px" class="mk">' + (lastMonth + 1) + '月</span>'; }
       const week = [];
       for (let d = 0; d < 7; d++) {
         const k = dateKey(cur);
@@ -4175,7 +4315,9 @@ class StatsView extends ItemView {
       }
       weeks.push('<div class="nws-heat-week">' + week.join('') + '</div>');
     }
-    return '<div class="nws-heatmap">' + weeks.join('') + '</div>';
+    const cls = small ? ' nws-heatmap sm' : '';
+    return (small && monthMarks ? '<div class="nws-heat-months">' + monthMarks + '</div>' : '') +
+      '<div class="nws-heatmap' + cls + '">' + weeks.join('') + '</div>';
   }
 }
 
@@ -4526,7 +4668,7 @@ class FocusModal extends Modal {
       TYPING_SOUNDS.forEach((s) => {
         const b = trow2.createEl('button', { text: s.name }); b.className = 'nws-fbtn' + ((s.id === p.settings.typeSound) || (s.id === 'key' && !p.settings.typeSound) ? ' on' : '');
         if (b.hasClass('on')) at = b;
-        b.addEventListener('click', () => { if (at) at.removeClass('on'); b.addClass('on'); at = b; p.settings.typeSound = s.id; p.saveNow(); if (s.id !== 'off') p.playTypeSound(); });
+        b.addEventListener('click', () => { if (at) at.removeClass('on'); b.addClass('on'); at = b; p.settings.typeSound = s.id; p.saveNow(); if (s.id !== 'off') p.playTypeSound(true); });
       });
       /* 背景音：持续环境声，可选关闭 */
       contentEl.createEl('div', { text: '背景音（持续环境声，可关）' }).style.cssText = 'font-size:11px;font-weight:600;margin:12px 0 5px';
@@ -4604,48 +4746,32 @@ class NSSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('灵感目录').setDesc('每条灵感独立存为该目录下的一个 md 笔记（原统一的 灵感.md 已弃用）')
       .addText((t) => t.setValue(p.settings.folderInspiration || '灵感').onChange(async (v) => { p.settings.folderInspiration = v || '灵感'; await p.saveNow(); }));
 
-    containerEl.createEl('h3', { text: '快捷符号栏' });
-    new Setting(containerEl).setName('显示悬浮符号栏').setDesc('正文输入常用标点/引号/括号/特殊符号，点一下即插入到光标处；可拖动、可收起，位置自动记忆')
-      .addToggle((t) => t.setValue(p.settings.symbolBar !== false).onChange(async (v) => { p.settings.symbolBar = v; await p.saveNow(); p.buildSymbolBar(); }));
-    new Setting(containerEl).setName('符号栏默认收起').setDesc('开启后符号栏以小条显示，点箭头展开')
-      .addToggle((t) => t.setValue(!!p.settings.symbolBarCollapsed).onChange(async (v) => { p.settings.symbolBarCollapsed = v; await p.saveNow(); p.buildSymbolBar(); }));
-    new Setting(containerEl).setName('重置符号栏位置').setDesc('把符号栏移回默认位置（右侧中部）')
-      .addButton((b) => b.setButtonText('重置').onClick(async () => { p.settings.symbolBarPos = null; await p.saveNow(); p.buildSymbolBar(); new Notice('符号栏位置已重置'); }));
-
     containerEl.createEl('h3', { text: '正文辅助' });
     new Setting(containerEl).setName('对话高亮').setDesc('双引号 “…” 内的文字高亮')
       .addToggle((t) => t.setValue(p.settings.dialogueHighlight).onChange(async (v) => { p.settings.dialogueHighlight = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('英文双引号').addToggle((t) => t.setValue(p.settings.dialogueEnglish).onChange(async (v) => { p.settings.dialogueEnglish = v; p.entityVersion++; await p.saveNow(); }));
-    new Setting(containerEl).setName('设定提及着色').setDesc('正文出现设定名称/别名时：该设定有颜色→彩色加粗；无颜色→加粗+下划线；鼠标悬停显示设定内容，点击打开设定笔记')
+    new Setting(containerEl).setName('设定提及着色').setDesc('正文出现设定名称/别名时：有颜色→该色加粗倾斜；无颜色→加粗倾斜+下划线；鼠标悬停预览内容，点击直接打开设定笔记')
       .addToggle((t) => t.setValue(p.settings.entityHighlight).onChange(async (v) => { p.settings.entityHighlight = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('同名文本匹配').addToggle((t) => t.setValue(p.settings.entityNameMatch).onChange(async (v) => { p.settings.entityNameMatch = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('别名匹配').addToggle((t) => t.setValue(p.settings.entityAliasMatch).onChange(async (v) => { p.settings.entityAliasMatch = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('名称前显示类型图标').addToggle((t) => t.setValue(p.settings.entityEmoji).onChange(async (v) => { p.settings.entityEmoji = v; p.entityVersion++; await p.saveNow(); }));
+    new Setting(containerEl).setName('日更目标（字）').setDesc('数据中心「日更目标完成率」按这个标准计算，默认 1000 字')
+      .addText((t) => t.setValue(String(p.settings.dailyGoal || 1000)).onChange(async (v) => { const n = parseInt(v, 10); p.settings.dailyGoal = (n >= 100 && n <= 100000) ? n : 1000; await p.saveNow(); }));
+    new Setting(containerEl).setName('单击设定词打开设定笔记').setDesc('开启后，正文里单击高亮的设定名/别名即跳转到该设定的 md 笔记（拖动选字不会误触）；关闭则只能用 Ctrl/Cmd+点击')
+      .addToggle((t) => t.setValue(p.settings.entityClickJump !== false).onChange(async (v) => { p.settings.entityClickJump = v; await p.saveNow(); }));
     new Setting(containerEl).setName('悬浮卡延迟(ms)').addText((t) => t.setValue(String(p.settings.hoverDelay)).onChange(async (v) => { p.settings.hoverDelay = Number(v) || 0; await p.saveNow(); }));
     new Setting(containerEl).setName('【】自动收集').setDesc('默认关闭。推荐用「选中文字→右键→保存为灵感」收集；开启后打完 】 会把内容存为一条灵感笔记并从正文移除')
       .addToggle((t) => t.setValue(p.settings.autoCollectBracket).onChange(async (v) => { p.settings.autoCollectBracket = v; await p.saveNow(); }));
     new Setting(containerEl).setName('【】chip 提示').addToggle((t) => t.setValue(p.settings.noteChip).onChange(async (v) => { p.settings.noteChip = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('批注底纹显示').setDesc('选中文字右键「添加批注」后，原文该段显示浅黄底纹；悬浮可看批注内容（原文不改一个字）')
       .addToggle((t) => t.setValue(p.settings.annotShow !== false).onChange(async (v) => { p.settings.annotShow = v; p.entityVersion++; await p.saveNow(); }));
-    new Setting(containerEl).setName('码字里程碑').setDesc('每满 N 字，在该行右侧标注 🎯 500 / 1000 / 1500…')
+    new Setting(containerEl).setName('码字里程碑').setDesc('每满 N 字，在该行右侧标注 🎯 300 / 600 / 900…')
       .addToggle((t) => t.setValue(p.settings.milestoneMark !== false).onChange(async (v) => { p.settings.milestoneMark = v; p.entityVersion++; await p.saveNow(); }));
-    new Setting(containerEl).setName('里程碑步长（字）').addText((t) => t.setValue(String(p.settings.milestoneStep || 500)).onChange(async (v) => { const n = parseInt(v, 10); p.settings.milestoneStep = (n >= 100) ? n : 500; p.entityVersion++; await p.saveNow(); }));
-    new Setting(containerEl).setName('双顿号唤起设定搜索').setDesc('在正文输入「、、」即弹出设定库搜索，选中后自动插入设定名')
-      .addToggle((t) => t.setValue(p.settings.dunhaoSearch !== false).onChange(async (v) => { p.settings.dunhaoSearch = v; await p.saveNow(); }));
+    new Setting(containerEl).setName('里程碑步长（字）').setDesc('默认 300；每达到 300 的整数倍，在该行右侧标注')
+      .addText((t) => t.setValue(String(p.settings.milestoneStep || 300)).onChange(async (v) => { const n = parseInt(v, 10); p.settings.milestoneStep = (n >= 100) ? n : 300; p.entityVersion++; await p.saveNow(); }));
 
-    /* ===== v2.9 正文标记体系 ===== */
-    containerEl.createEl('h3', { text: '正文标记体系' });
-    const trigNote = containerEl.createDiv();
-    trigNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.7;margin-bottom:8px';
-    trigNote.innerHTML = '写作时随时用的快捷符号：<br>'
-      + '· <b>、、</b> → 搜索设定库插入名称　· <b>@@</b> → 搜索角色<br>'
-      + '· <b>//</b> → 模糊搜索设定库（名称/别名/内容都搜）<br>'
-      + '· <b>？？内容？？</b> → 标注「待查资料」，全文自动汇总成表格<br>'
-      + '· <b>！！内容！！</b> → 标注「待修改」，同一张表格管理；删除正文标记后表格自动同步';
-    new Setting(containerEl).setName('待查待改清单文件').setDesc('？？/！！ 标记自动汇总到这个 md 文件（Markdown 表格，含章节跳转链接）')
-      .addText((t) => t.setValue(p.settings.todoFile || '大纲/待查待改清单.md').onChange(async (v) => { p.settings.todoFile = v || '大纲/待查待改清单.md'; await p.saveNow(); await p.writeTodoFile(); }));
-    new Setting(containerEl).setName('立即重建待查待改清单').setDesc('扫描全部正文标记，重新生成清单表格')
-      .addButton((b) => b.setButtonText('重建').onClick(async () => { await p.writeTodoFile(); new Notice('待查待改清单已更新'); }));
+    /* ===== 设定笔记出场章节统计（保留） ===== */
+    containerEl.createEl('h3', { text: '设定笔记统计' });
     new Setting(containerEl).setName('设定笔记自动统计出场章节').setDesc('每个设定的 md 笔记末尾自动生成「📍 出场章节」表格：出场次数 + 章节链接（点击跳转），随正文修改自动刷新')
       .addToggle((t) => t.setValue(p.settings.appearSync !== false).onChange(async (v) => { p.settings.appearSync = v; await p.saveNow(); if (v) await p.syncEntityAppearances(); }));
     new Setting(containerEl).setName('立即刷新出场章节统计').setDesc('手动触发一次全部设定笔记的出场章节表格重建')
@@ -4689,7 +4815,7 @@ class NSSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('自定义专注(分)').addText((t) => t.setValue(String(p.settings.focusMinutes)).onChange(async (v) => { p.settings.focusMinutes = minClamp(v, 25); await p.saveNow(); }));
     const wpNote = containerEl.createDiv();
     wpNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin:6px 0';
-    wpNote.textContent = '可选壁纸：' + FOCUS_WALLPAPERS.map((w) => w.name).join(' / ') + '。石墨/咖啡/墨绿为低刺激深色系，更适合长时间专注。';
+    wpNote.textContent = '可选壁纸：' + FOCUS_WALLPAPERS.map((w) => w.name).join(' / ') + '。深色系已提亮并加色彩层次，正文下方有半透明承载卡保证文字对比。';
     new Setting(containerEl).setName('专注壁纸')
       .addDropdown((d) => d.addOptions(FOCUS_WALLPAPERS.reduce((o, w) => { o[w.id] = w.name; return o; }, {})).setValue(p.settings.focusWallpaper).onChange(async (v) => { p.settings.focusWallpaper = v; await p.saveNow(); p.applyFocusWallpaper(v); }));
     new Setting(containerEl).setName('进入专注自动全屏').setDesc('开启后点「开始专注」自动隐藏两侧边栏并系统全屏；结束专注自动还原')
@@ -4697,7 +4823,7 @@ class NSSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('背景变暗程度').setDesc('专注时把界面压暗的程度，0=不变暗、90%=几乎全黑；越暗越容易专注')
       .addSlider((s) => s.setLimits(0, 90, 5).setValue(Math.round((Number(p.settings.focusDim) || 0) * 100)).onChange(async (v) => { p.settings.focusDim = v / 100; await p.saveNow(); if (p.focusState.active) p.applyFocusWallpaper(p.settings.focusWallpaper); }));
     new Setting(containerEl).setName('打字音效（敲键发声）').setDesc('每次敲键盘响一声，与背景音独立；只在真实输入时发声')
-      .addDropdown((d) => d.addOptions(TYPING_SOUNDS.reduce((o, s) => { o[s.id] = s.name; return o; }, {})).setValue(p.settings.typeSound || 'off').onChange(async (v) => { p.settings.typeSound = v; await p.saveNow(); if (v !== 'off') p.playTypeSound(); }));
+      .addDropdown((d) => d.addOptions(TYPING_SOUNDS.reduce((o, s) => { o[s.id] = s.name; return o; }, {})).setValue(p.settings.typeSound || 'off').onChange(async (v) => { p.settings.typeSound = v; await p.saveNow(); if (v !== 'off') p.playTypeSound(true); }));
     new Setting(containerEl).setName('打字音效音量(0-1)').addText((t) => t.setValue(String(p.settings.typeSoundVolume != null ? p.settings.typeSoundVolume : 0.35)).onChange(async (v) => { p.settings.typeSoundVolume = clamp(Number(v) || 0, 0, 1); await p.saveNow(); }));
     new Setting(containerEl).setName('背景音（持续环境声）').setDesc('雨滴/白噪音等循环环境声，专注或平时都可开；选「关闭」即静音')
       .addDropdown((d) => d.addOptions(FOCUS_SOUNDS.reduce((o, s) => { o[s.id] = s.name; return o; }, {})).setValue(p.settings.focusSound).onChange(async (v) => { p.settings.focusSound = v; await p.saveNow(); }));
@@ -4706,7 +4832,7 @@ class NSSettingTab extends PluginSettingTab {
       .addToggle((t) => t.setValue(!!p.settings.typingMode).onChange(async (v) => { p.settings.typingMode = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('渐淡段数').addText((t) => t.setValue(String(p.settings.typingRadius || 2)).onChange(async (v) => { p.settings.typingRadius = Math.max(1, parseInt(v, 10) || 2); p.entityVersion++; await p.saveNow(); }));
 
-    new Setting(containerEl).setName('设定文件存放方式').setDesc('设定统一扁平存放为 设定/<名称>.md，大类与类型写在文件 frontmatter（nws_group / nws_type），正文按模板补充。');
+    new Setting(containerEl).setName('设定文件存放方式').setDesc('设定按大类分门别类存放为 设定/<大类>/<名称>.md，6 大类各有独立子文件夹；大类与类型同时写在文件 frontmatter（nws_group / nws_type），正文按模板补充。已有的扁平文件会在加载时自动归入对应子文件夹。');
 
     containerEl.createEl('h3', { text: '设定库分类（6 大类 + 独立）' });
     const groupNote = containerEl.createDiv();

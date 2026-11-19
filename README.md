@@ -1,6 +1,6 @@
-# 小说写作台 · Novel Writer Studio
+# Novel Writing（小说写作台）
 
-[![version](https://img.shields.io/badge/version-2.9.1-blue)](https://github.com/vrphu/novel-writer-studio/releases/tag/v2.9.1)
+[![version](https://img.shields.io/badge/version-2.13.0-blue)](https://github.com/vrphu/novel-writer-studio/releases/tag/v2.13.0)
 [![Obsidian](https://img.shields.io/badge/Obsidian-%E2%89%A51.5.0-7c3aed)](https://obsidian.md)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
