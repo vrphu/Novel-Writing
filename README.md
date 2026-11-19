@@ -1,8 +1,14 @@
 # 小说写作台 · Novel Writer Studio
 
-> Obsidian 社区插件 · 本地优先的中文小说写作工作台
+[![version](https://img.shields.io/badge/version-2.9.1-blue)](https://github.com/vrphu/novel-writer-studio/releases/tag/v2.9.1)
+[![Obsidian](https://img.shields.io/badge/Obsidian-%E2%89%A51.5.0-7c3aed)](https://obsidian.md)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+> 本地优先的中文小说写作工作台
 
 一个面向中文长篇创作者的 Obsidian 插件：把「卷章结构、设定库、大纲、情节编排、时间-空间双线、灵感便签、批注、码字统计」收进一个面板，同时把正文本身完整交还给你 —— 插件只做装饰层标记，**不改写你的任何原文**。
+
+仓库地址：https://github.com/vrphu/novel-writer-studio
 
 ---
 
@@ -57,8 +63,13 @@
 
 ## 安装
 
+### BRAT（推荐，可自动更新）
+1. 安装 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 插件并启用
+2. 设置 → BRAT → Add Beta plugin → 输入 `vrphu/novel-writer-studio`
+3. 启用「小说写作台」；后续有新版本可在 BRAT 内一键更新
+
 ### 手动安装
-1. 下载本仓库 `main.js` / `manifest.json` / `styles.css` 三个文件
+1. 从 [Releases](https://github.com/vrphu/novel-writer-studio/releases/latest) 下载 `main.js` / `manifest.json` / `styles.css` 三个文件
 2. 放入你的 Vault：`<你的库>/.obsidian/plugins/novel-writer-studio/`
 3. 在 Obsidian 设置 → 第三方插件中启用「小说写作台」
 
@@ -89,8 +100,10 @@ novel-writer-studio/
 ├── main.js        # 插件主逻辑
 ├── manifest.json  # 插件元信息
 ├── styles.css     # 样式
-├── versions.json  # 版本索引
-└── README.md
+├── versions.json  # 版本 ↔ 最低 Obsidian 版本索引
+├── README.md
+├── LICENSE        # MIT
+└── .gitignore     # 排除 data.json 等运行期数据
 ```
 
 ## 版本
