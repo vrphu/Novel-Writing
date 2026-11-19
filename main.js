@@ -6,11 +6,7 @@ const {
   TFile, TFolder, normalizePath, MarkdownView
 } = obsidian;
 
-/* ===== v3.0 根因修复：CM6 装饰 API 加载 =====
-   Obsidian 的 require('obsidian') 导出对象里【不含】Decoration/ViewPlugin/RangeSetBuilder
-   （已在 obsidian.asar 的 __export 表核实）。旧版靠它判定 HAS_CM=false，导致整条
-   正文装饰层（设定高亮/引号高亮/批注/里程碑/打字模式）从未注册 —— 这就是"设不了、
-   高亮不出来"的真正原因。正确做法：用 Obsidian 拦截的 require 直接取内部 @codemirror 模块。*/
+
 let Decoration = null, ViewPlugin = null, RangeSetBuilder = null;
 const cmLoadErrors = [];
 try {
@@ -51,10 +47,7 @@ const PLOT_STAGES = [
 const LINE_BIND_KINDS = ['人物', '角色关系', '地理', '力量体系', '物品道具', '社会文化', '经济科技', '剧情', '场景', '冲突', '伏笔', '时间线', '线索', '信息差', '情绪', '情节'];
 /* ===== v2.4：多轨时间/空间/情绪线 =====
    track（轨）= { id, name, axis:'time'|'space'|'emotion', view, bindings, order, created }
-   一条轨可重命名（如"张三的行动轨迹""京城地理线""主角情绪曲线"），并可整体绑定人物/设定/情节。
-   三条轴任意组合：可只显示时间 / 只显示空间 / 只显示情绪 / 任意多条对照。
-   节点 node.trackId 指向 track.id（旧节点 line:'time'|'space' 迁移到默认轨）。
-   视角 view 决定节点称呼与内容提示。 */
+ 
 const TRACK_AXES = [
   { key: 'time', name: '时间线', emoji: '⏳' },
   { key: 'space', name: '空间线', emoji: '🗺️' },
