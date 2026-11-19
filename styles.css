@@ -345,7 +345,7 @@ body.nws-focus-on.theme-light .cm-content, body.nws-focus-on.theme-light .cm-lin
   text-shadow: none;
 }
 
-/* ===== v2.8 禅模式：全屏专注 ===== */
+/* ===== v2.8全屏专注 ===== */
 body.nws-focus-zen .status-bar { display: none; }
 body.nws-focus-zen .workspace-leaf-content[data-type="markdown"] { --file-line-width: 44em; }
 body.nws-focus-zen .workspace-split.mod-root .workspace-leaf:not(.mod-active) { opacity: .35; transition: opacity .3s; }
