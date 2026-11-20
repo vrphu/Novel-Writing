@@ -1,4 +1,4 @@
-# Novel Writing（小说写作台）
+# Novel Writing
 
 [![version](https://img.shields.io/badge/version-2.13.0-blue)](https://github.com/vrphu/novel-writer-studio/releases/tag/v2.13.0)
 [![Obsidian](https://img.shields.io/badge/Obsidian-%E2%89%A51.5.0-7c3aed)](https://obsidian.md)
@@ -6,9 +6,8 @@
 
 > 本地优先的中文小说写作工作台
 
-一个面向中文长篇创作者的 Obsidian 插件：把「卷章结构、设定库、大纲、情节编排、时间-空间双线、灵感便签、批注、码字统计」收进一个面板，同时把正文本身完整交还给你 —— 插件只做装饰层标记，**不改写你的任何原文**。
-
-仓库地址：https://github.com/vrphu/novel-writer-studio
+一个面向中文长篇创作者的 Obsidian 插件：把「卷章结构、设定库、大纲、情节编排、时间-空间双线、灵感便签、批注、码字统计」收进一个面板
+仓库地址：https://github.com/vrphu/Novel-Writing
 
 ---
 
@@ -26,7 +25,7 @@
 - 每条设定 = `设定/<库>/<名称>.md`，frontmatter 存元数据，正文由你自由书写
 - 正文提及自动着色：**有颜色** → 彩色加粗；**无颜色** → 加粗 + 倾斜 + 下划线
 - 悬停显示设定内容预览，点击直接跳转到设定文件
-- **📍 出场章节自动统计**：设定笔记末尾自动生成统计表（共 N 次 · M 章，每章出场次数 + 可点击跳转），随正文修改自动刷新，不碰用户手写内容
+- **📍 出场章节自动统计**：设定笔记末尾自动生成统计表（共 N 次 · M 章，每章出场次数 + 可点击跳转），随正文修改自动刷新
 - 设定文件改名/改属性/删除 → 统计自动同步（读文件，不依赖缓存）
 
 
@@ -56,18 +55,18 @@
 
 ### BRAT（推荐，可自动更新）
 1. 安装 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 插件并启用
-2. 设置 → BRAT → Add Beta plugin → 输入 `vrphu/novel-writer-studio`
-3. 启用「小说写作台」；后续有新版本可在 BRAT 内一键更新
+2. 设置 → BRAT → Add Beta plugin → 输入 `vrphu/Novel-Writing`
+3. 启用Novel Writing；后续有新版本可在 BRAT 内一键更新
 
 ### 手动安装
-1. 从 [Releases](https://github.com/vrphu/novel-writer-studio/releases/latest) 下载 `main.js` / `manifest.json` / `styles.css` 三个文件
-2. 放入你的 Vault：`<你的库>/.obsidian/plugins/novel-writer-studio/`
-3. 在 Obsidian 设置 → 第三方插件中启用「小说写作台」
+1. 从 [Releases](https://github.com/vrphu/Novel-Writing/releases/latest) 下载 `main.js` / `manifest.json` / `styles.css` 三个文件
+2. 放入你的 Vault：`<你的库>/.obsidian/plugins/Novel-Writing/`
+3. 在 Obsidian 设置 → 第三方插件中启用NovelWriting
 
 ### 命令面板
 | 命令 | 作用 |
 |---|---|
-| 打开小说写作台 | 打开主面板 |
+| 打开Novel-Writing | 打开主面板 |
 | 新建卷 / 新建章 | 快速创建结构 |
 | 同步设定库文件 | 设定文件 ↔ 索引双向同步 |
 | 搜索设定库 / 搜索角色 | 模糊检索设定 |
