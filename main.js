@@ -5,8 +5,16 @@ const {
   Plugin, ItemView, Modal, Notice, Setting, PluginSettingTab,
   TFile, TFolder, normalizePath, MarkdownView
 } = obsidian;
+/* v2.15：扩展功能模块（悬浮符号栏/版本历史/编辑器命令/搜索/素材/导入导出/复盘/会话）。
+   容错加载：即使扩展模块缺失也不影响既有功能。 */
+let FEATURES = null;
+try { FEATURES = require('./features'); } catch (e) { console.error('[小说写作台] 扩展模块加载失败:', e); }
 
-
+/* ===== v3.0 根因修复：CM6 装饰 API 加载 =====
+   Obsidian 的 require('obsidian') 导出对象里【不含】Decoration/ViewPlugin/RangeSetBuilder
+   （已在 obsidian.asar 的 __export 表核实）。旧版靠它判定 HAS_CM=false，导致整条
+   正文装饰层（设定高亮/引号高亮/批注/里程碑/打字模式）从未注册 —— 这就是"设不了、
+   高亮不出来"的真正原因。正确做法：用 Obsidian 拦截的 require 直接取内部 @codemirror 模块。*/
 let Decoration = null, ViewPlugin = null, RangeSetBuilder = null;
 const cmLoadErrors = [];
 try {
@@ -47,11 +55,15 @@ const PLOT_STAGES = [
 const LINE_BIND_KINDS = ['人物', '角色关系', '地理', '力量体系', '物品道具', '社会文化', '经济科技', '剧情', '场景', '冲突', '伏笔', '时间线', '线索', '信息差', '情绪', '情节'];
 /* ===== v2.4：多轨时间/空间/情绪线 =====
    track（轨）= { id, name, axis:'time'|'space'|'emotion', view, bindings, order, created }
- 
+   一条轨可重命名（如"张三的行动轨迹""京城地理线""主角情绪曲线"），并可整体绑定人物/设定/情节。
+   三条轴任意组合：可只显示时间 / 只显示空间 / 只显示情绪 / 任意多条对照。
+   节点 node.trackId 指向 track.id（旧节点 line:'time'|'space' 迁移到默认轨）。
+   视角 view 决定节点称呼与内容提示。 */
 const TRACK_AXES = [
   { key: 'time', name: '时间线', emoji: '⏳' },
   { key: 'space', name: '空间线', emoji: '🗺️' },
-  { key: 'emotion', name: '情绪线', emoji: '💗' }
+  { key: 'emotion', name: '情绪线', emoji: '💗' },
+  { key: 'custom', name: '自定义线', emoji: '🧵' }   /* v2.17：如视角线/道具线/信息线，可作为时空事件的附加维度 */
 ];
 /* 视角：时间/空间/情绪都可用；情绪视角有专属触发源字段 */
 const TRACK_VIEWS = [
@@ -65,7 +77,8 @@ const TRACK_VIEWS = [
 const TRACK_NAME_PRESETS = {
   time: ['主角成长时间线', '故事发展时间线', '张三的行动轨迹', '双线对照·时间'],
   space: ['京城地理线', '主角行动路线', '场景转换空间线', '双线对照·空间'],
-  emotion: ['主角情绪曲线', '由事件引发的情绪变化', '某地的情绪氛围线', '读者情绪张力线']
+  emotion: ['主角情绪曲线', '由事件引发的情绪变化', '某地的情绪氛围线', '读者情绪张力线'],
+  custom: ['视角线（主角视角 / 配角视角 / 读者视角）', '关键道具线', '信息与秘密线']
 };
 function trackAxisDef(k) { return TRACK_AXES.find((a) => a.key === k) || TRACK_AXES[0]; }
 function trackViewDef(k) { return TRACK_VIEWS.find((v) => v.key === k) || TRACK_VIEWS[0]; }
@@ -73,6 +86,8 @@ function trackViewDef(k) { return TRACK_VIEWS.find((v) => v.key === k) || TRACK_
 const PALETTE = ['#C98B86', '#8FAF95', '#86A0BD', '#D2A271', '#D4BE76', '#A797BE'];
 const PALETTE_NAMES = ['红', '绿', '蓝', '橙', '黄', '紫'];
 /* v2.2：右键一级常用归类（用户最常点），直接平铺在右键菜单，不再藏进两级子菜单 */
+/* v2.16：正文码字时选中文字的快速分类——默认仅三类，其余类型可在设置页勾选显示 */
+const DEFAULT_QUICK_TYPES = ['人物', '情节', '伏笔'];
 const QUICK_CLASSIFY = [
   { type: '伏笔', group: '剧情大纲+伏笔库', emoji: '🔖' },
   { type: '情节', group: '剧情大纲+伏笔库', emoji: '🧩' },
@@ -192,7 +207,12 @@ const DEFAULT_OUTLINE_TYPES = ['总纲', '卷纲', '章节', '情节', '人物',
 
 /* v2.6.1：章节状态四选项（点目录里的状态标签循环切换）。旧值映射：空白→草稿、草稿→写作中、修订中→待修订、已完成/已定稿→已定稿 */
 const CH_STATUS = ['草稿', '写作中', '待修订', '已定稿'];
-const PLUGIN_VERSION = '2.13.0';
+const PLUGIN_VERSION = '2.17.1';
+
+/* v2.16.5：中英界面切换已移除，插件仅保留中文界面。t()/trNode 保留为直通桩以兼容既有调用点 */
+function t(s) { return s; }
+function trNode(node) { return node; }
+
 /* 设定笔记「出场章节」自动统计区的标记（只替换标记之后的内容，不碰用户正文） */
 const NWS_APPEAR_MARK = '<!-- NWS:APPEARANCES -->';
 
@@ -230,6 +250,16 @@ const TYPING_SOUNDS = [
   { id: 'key', name: '⌨️ 机械键盘' },
   { id: 'soft', name: '🤍 轻柔按键' },
   { id: 'type', name: '📜 打字机' },
+];
+/* v2.17 写作场景：壁纸+背景音+打字音效+打字模式+全屏 的预设包。
+   预设场景只引用已有壁纸/音效 id；自定义场景存 settings.customScenes（用户在弹窗/设置页保存）。 */
+const SCENE_PRESETS = [
+  { id: 'scn_midnight', name: '🌙 深夜书房', wallpaper: 'midnight', sound: 'off', typeSound: 'soft', typingMode: true, fullscreen: true },
+  { id: 'scn_rain', name: '🌧 雨夜写作', wallpaper: 'navy', sound: 'rain', typeSound: 'key', typingMode: true, fullscreen: true },
+  { id: 'scn_cafe', name: '☕ 深夜咖啡馆', wallpaper: 'espresso', sound: 'noise', typeSound: 'type', typingMode: false, fullscreen: false },
+  { id: 'scn_forest', name: '🌲 森林晨光', wallpaper: 'forest', sound: 'bubble', typeSound: 'soft', typingMode: true, fullscreen: true },
+  { id: 'scn_paper', name: '📜 纸白极简', wallpaper: 'paper', sound: 'off', typeSound: 'off', typingMode: false, fullscreen: false },
+  { id: 'scn_ink', name: '🌃 夜墨氛围', wallpaper: 'ink', sound: 'drip', typeSound: 'soft', typingMode: true, fullscreen: true },
 ];
 function dateKey(d) {
   const x = d ? new Date(d) : new Date();
@@ -297,6 +327,10 @@ const DEFAULT_SETTINGS = {
   typeSoundVolume: 0.35,               // 打字音效音量 0-1
   typingMode: false,                   // 打字模式：当前段高亮+前后渐淡
   typingRadius: 2,                     // 渐淡段数
+  /* v2.17：写作场景（番茄钟+专注模式合并入口） */
+  customScenes: [],                    // 自定义写作场景 [{ id, name, wallpaper, sound, typeSound, typingMode, fullscreen }]
+  focusScene: '',                      // 当前选中的场景 id（预设 scn_* / 自定义 scn_c*）；''=未选（沿用当前壁纸/音效设置）
+  focusModeDefault: 'pomodoro',        // 专注写作弹窗默认模式 'pomodoro'|'focus'
   lineMode: 'both',                    // 旧字段，兼容读取（三轴开关见 visibleAxes）
   /* v2.4：三轴独立开关——任意组合显示时间/空间/情绪线；null 时按 lineMode 推断 */
   visibleAxes: ['time', 'space'],
@@ -305,6 +339,20 @@ const DEFAULT_SETTINGS = {
   milestoneMark: true,                 // 每 N 字在行右侧标注里程碑
   milestoneStep: 300,                  // 每 300 字在行右标注里程碑
   dailyGoal: 1000,                     // v2.13：日更目标字数（目标达成率统计）
+  /* v2.16：插件主题色 / 正文快捷分类 */
+  themeColor: '#8FA394',               // 插件主题色（默认莫兰迪绿；覆盖 --nws-accent）
+  themeColorOn: true,                  // 是否启用自定义主题色
+  typeQuick: null,                     // 各小库类型是否在正文选中时出现在快捷分类；null=用默认三类
+  quickClassifyOn: true,               // v2.16.1：正文「选中文字设为设定」总开关（关闭后仅保留一个自定义入口）
+  quickCustom: [],                     // v2.16.2：自定义快捷项 [{ name, type }]，name 为菜单显示名，type 为归属小库
+  groupClassifyOn: false,              // v2.16.3：右键「设为设定 · 大类 ▸ 小库」两级归类与自定义入口；默认隐藏
+  /* v2.14：正文排版（行距/字距/首行缩进/段间距/字号，编辑+阅读+专注统一生效） */
+  typoEnabled: true,                   // 排版总开关
+  typoLineHeight: 1.9,                 // 行间距倍数（1~3）
+  typoLetterSpacing: 0,                // 字间距（em，0~0.3）
+  typoIndent: 2,                       // 首行缩进（em，0=不缩进；标题/列表/引用/代码自动排除）
+  typoParaGap: 8,                      // 阅读视图段间距（px，0~48）
+  typoFontSize: 0,                     // 正文字号 px（0=跟随 Obsidian 外观字号）
   /* 设定笔记末尾自动生成「出场章节」统计表（保留） */
   appearSync: true,
 };
@@ -313,6 +361,26 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sli
 function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function fmt(n) { return (n || 0).toLocaleString('en-US'); }
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+/* v2.16 颜色工具：HEX 校验 / 转 RGB / 相对亮度 / 混色 */
+function normalizeHex(v) {
+  if (v == null) return null;
+  let h = String(v).trim().replace(/^#/, '');
+  if (/^[0-9a-f]{3}$/i.test(h)) h = h.split('').map((c) => c + c).join('');
+  return /^[0-9a-f]{6}$/i.test(h) ? ('#' + h.toUpperCase()) : null;
+}
+function hexToRgb(hex) {
+  const h = String(hex).replace('#', '');
+  return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+}
+function relLum(c) {
+  const f = (x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+}
+function mix(hexA, hexB, ratioB) {
+  const a = hexToRgb(hexA), b = hexToRgb(hexB);
+  const ch = (x, y) => Math.round(x + (y - x) * ratioB).toString(16).padStart(2, '0');
+  return '#' + ch(a.r, b.r) + ch(a.g, b.g) + ch(a.b, b.b);
+}
 function debounce(fn, ms) {
   let h = null;
   return function () { clearTimeout(h); const a = arguments, s = this; h = setTimeout(() => fn.apply(s, a), ms); };
@@ -374,6 +442,10 @@ class NovelWriterStudio extends Plugin {
     if (this.settings.focusDim === 0.55) this.settings.focusDim = 0.32;
     /* v2.10 迁移：里程碑 500 → 300；仅当仍是旧默认值时改，尊重用户自定义值 */
     if (this.settings.milestoneStep === 500) this.settings.milestoneStep = 300;
+    /* v2.17：自定义写作场景清理（非数组/缺名称的丢弃；focusScene 指向不存在的场景则清空） */
+    if (!Array.isArray(this.settings.customScenes)) this.settings.customScenes = [];
+    this.settings.customScenes = this.settings.customScenes.filter((s) => s && s.id && s.name);
+    if (this.settings.focusScene && !this.sceneById(this.settings.focusScene)) this.settings.focusScene = '';
 
     this.entityVersion = 0;
     this.wordCache = Object.create(null);
@@ -404,6 +476,11 @@ class NovelWriterStudio extends Plugin {
     await step('灵感文件→索引', () => this.syncNoteFiles());
     await step('清理旧灵感.md', () => this.retireOldInspirationFile());
     await step('统计扫描', () => this.rescan(false));
+    await step('应用正文排版', () => this.applyTypo());
+    await step('应用插件主题色', () => this.applyThemeColor());
+    if (FEATURES && typeof FEATURES.setupFeatures === 'function') {
+      await step('加载扩展功能模块', () => FEATURES.setupFeatures(this));
+    }
 
     this.registerView(VIEW_CATALOG, (leaf) => new CatalogView(leaf, this));
     this.registerView(VIEW_OUTLINE, (leaf) => new OutlineView(leaf, this));
@@ -421,17 +498,23 @@ class NovelWriterStudio extends Plugin {
       console.error('[小说写作台] CM6 装饰层加载失败，正文高亮不可用。诊断：', cmLoadErrors.join(' | ') || '模块未导出装饰类');
     }
 
-    this.addRibbonIcon('folder-tree', '写作台 · 目录', () => this.activateView(VIEW_CATALOG));
-    this.addRibbonIcon('list-tree', '写作台 · 大纲', () => this.activateView(VIEW_OUTLINE));
-    this.addRibbonIcon('shapes', '写作台 · 设定库', () => this.activateView(VIEW_ENTITIES));
-    this.addRibbonIcon('git-branch', '写作台 · 情节', () => this.activateView(VIEW_PLOTS));
-    this.addRibbonIcon('git-merge', '写作台 · 时间/空间/情绪线', () => this.activateView(VIEW_LINES));
-    this.addRibbonIcon('lightbulb', '写作台 · 灵感', () => this.activateView(VIEW_NOTES));
-    this.addRibbonIcon('chart-no-axes-column', '写作台 · 数据中心', () => this.activateView(VIEW_STATS));
-    this.addRibbonIcon('sticky-note', '写作台 · 批注', () => this.activateView(VIEW_ANNOT));
-    this.addRibbonIcon('search', '写作台 · 查找替换', () => new FindReplaceModal(this.app, this).open());
-    this.addRibbonIcon('timer', '写作台 · 番茄钟', () => new FocusModal(this.app, this, 'pomodoro').open());
-    this.addRibbonIcon('eye', '写作台 · 专注模式', () => new FocusModal(this.app, this, 'focus').open());
+    /* v2.16：ribbon 注册统一走 addRibbon，保存元素引用以便切语言即时更新 tooltip */
+    this._ribbonRefs = [];
+    const addRibbon = (icon, title, fn) => {
+      const el = this.addRibbonIcon(icon, t(title), fn);
+      if (el) this._ribbonRefs.push({ el, title });
+    };
+    addRibbon('folder-tree', '写作台 · 目录', () => this.activateView(VIEW_CATALOG));
+    addRibbon('list-tree', '写作台 · 大纲', () => this.activateView(VIEW_OUTLINE));
+    addRibbon('shapes', '写作台 · 设定库', () => this.activateView(VIEW_ENTITIES));
+    addRibbon('git-branch', '写作台 · 情节', () => this.activateView(VIEW_PLOTS));
+    addRibbon('git-merge', '写作台 · 时间/空间/情绪线', () => this.activateView(VIEW_LINES));
+    addRibbon('lightbulb', '写作台 · 灵感', () => this.activateView(VIEW_NOTES));
+    addRibbon('chart-no-axes-column', '写作台 · 数据中心', () => this.activateView(VIEW_STATS));
+    addRibbon('sticky-note', '写作台 · 批注', () => this.activateView(VIEW_ANNOT));
+    addRibbon('search', '写作台 · 查找替换', () => new FindReplaceModal(this.app, this).open());
+    /* v2.17：番茄钟与专注模式合并为一个入口（弹窗内切换模式、选写作场景） */
+    addRibbon('timer', '写作台 · 专注写作（番茄钟/自由专注/写作场景）', () => new FocusModal(this.app, this).open());
 
     this.buildHover();
     this.buildAnnotHover();
@@ -448,12 +531,13 @@ class NovelWriterStudio extends Plugin {
     this._barTimer = setInterval(() => this.tickLive(), 1000);
     this.registerInterval(this._barTimer);
 
-    this.addSettingTab(new NSSettingTab(this.app, this));
+    this._settingTab = new NSSettingTab(this.app, this);
+    this.addSettingTab(this._settingTab);
     setTimeout(() => this.refreshViews(), 800);
     /* 加载成功提示：HAS_CM 状态直接反映正文高亮是否可用（v2.10 根因修复） */
     const migrated = !saved.schemaVersion || saved.schemaVersion < 13;
     const cmNote = HAS_CM ? '正文设定高亮已就绪' : '⚠️ 正文高亮不可用（CM6 未加载，请看控制台）';
-    setTimeout(() => new Notice('📖 小说写作台 v' + PLUGIN_VERSION + ' 已加载' + (migrated ? ' · 旧数据已迁移' : '') + ' · ' + cmNote), 1200);
+    setTimeout(() => new Notice(t('📖 小说写作台 v') + PLUGIN_VERSION + t(' 已加载') + (migrated ? t(' · 旧数据已迁移') : '') + ' · ' + cmNote), 1200);
   }
 
   onunload() {
@@ -461,11 +545,118 @@ class NovelWriterStudio extends Plugin {
     if (this.barEl) this.barEl.remove();
     if (this.hudEl) this.hudEl.remove();
     clearTimeout(this.hoverTimer); clearTimeout(this.hoverHideTimer);
+    if (this._features) { try { this._features.dispose(); } catch (e) {} this._features = null; }
     if (this._barTimer) clearInterval(this._barTimer);
     this.stopSound();
     this.clearFocusWallpaper();
+    /* v2.14：卸载时移除排版样式注入 */
+    if (this._typoStyle) { try { this._typoStyle.remove(); } catch (e) {} this._typoStyle = null; }
+    /* v2.16：卸载时移除主题色样式注入（v2.16.5：语言切换已移除） */
+    if (this._themeStyle) { try { this._themeStyle.remove(); } catch (e) {} this._themeStyle = null; }
+    try { document.body.classList.remove('nws-typo-on'); } catch (e) {}
     if (this.pomodoro && this.pomodoro.timer) clearInterval(this.pomodoro.timer);
     if (this.focusState && this.focusState.timer) clearInterval(this.focusState.timer);
+  }
+
+  /* ---------- v2.14 正文排版 ---------- */
+  /* 通过动态 style 注入 CSS 变量：编辑视图（CM6）+ 阅读视图 + 专注模式统一生效；
+     标题/列表/引用/代码/表格行自动排除首行缩进与字间距，避免破坏 Markdown 结构。 */
+  applyTypo() {
+    try {
+      const s = this.settings;
+      if (!this._typoStyle) {
+        const st = document.createElement('style');
+        st.id = 'nws-typo-style';
+        (document.head || document.body).appendChild(st);
+        this._typoStyle = st;
+      }
+      const on = s.typoEnabled !== false;
+      try {
+        if (on) document.body.classList.add('nws-typo-on');
+        else document.body.classList.remove('nws-typo-on');
+      } catch (e) {}
+      if (!on) { this._typoStyle.textContent = ''; return; }
+      const lh = clamp(Number(s.typoLineHeight) || 1.9, 1, 3);
+      const ls = clamp(Number(s.typoLetterSpacing) || 0, 0, 0.3);
+      const ind = clamp(Number(s.typoIndent) || 0, 0, 4);
+      const gap = clamp(Number(s.typoParaGap) || 0, 0, 48);
+      const fs = clamp(Number(s.typoFontSize) || 0, 0, 28);
+      let css = 'body.nws-typo-on{--nws-lh:' + lh + ';--nws-ls:' + ls + 'em;--nws-ind:' + ind + 'em;--nws-gap:' + gap + 'px;}';
+      if (fs >= 12) css += 'body.nws-typo-on{--font-size:' + fs + 'px !important;}';
+      /* 编辑视图（CM6 源码/实时预览） */
+      css += 'body.nws-typo-on .markdown-source-view.mod-cm6 .cm-content > .cm-line{line-height:var(--nws-lh);letter-spacing:var(--nws-ls);text-indent:var(--nws-ind);}';
+      /* 非正文行：不缩进、不加字距（标题/列表/引用/代码/表格） */
+      const exSel = ['HyperMD-header', 'HyperMD-list-line', 'HyperMD-quote', 'HyperMD-codeblock', 'HyperMD-table-row', 'HyperMD-hr']
+        .map((c) => 'body.nws-typo-on .markdown-source-view.mod-cm6 .cm-content > .cm-line.' + c).join(',');
+      css += exSel + '{text-indent:0;letter-spacing:0;}';
+      /* 阅读视图 */
+      css += 'body.nws-typo-on .markdown-reading-view .markdown-preview-view{line-height:var(--nws-lh);letter-spacing:var(--nws-ls);}';
+      css += 'body.nws-typo-on .markdown-reading-view .markdown-preview-view p{line-height:var(--nws-lh);text-indent:var(--nws-ind);margin-block-end:var(--nws-gap);}';
+      css += 'body.nws-typo-on .markdown-reading-view .markdown-preview-view h1,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view h2,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view h3,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view h4,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view li,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view blockquote,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view pre,'
+        + 'body.nws-typo-on .markdown-reading-view .markdown-preview-view table{text-indent:0;}';
+      this._typoStyle.textContent = css;
+      /* 字号变化后让 CM6 重新测量行高，避免光标错位 */
+      try {
+        this.app.workspace.iterateCodeMirrors((cm) => { if (cm && cm.requestMeasure) cm.requestMeasure(); });
+      } catch (e) {}
+    } catch (e) { console.error('[小说写作台] 应用排版失败:', e); }
+  }
+
+  /* ---------- v2.16 插件主题色 ---------- */
+  /* 用独立 style 标签覆盖 --nws-accent 系列；只作用于插件自身的 CSS 变量，不改 Obsidian 主题 */
+  applyThemeColor() {
+    try {
+      const s = this.settings;
+      if (!this._themeStyle) {
+        const st = document.createElement('style');
+        st.id = 'nws-theme-style';
+        (document.head || document.body).appendChild(st);
+        this._themeStyle = st;
+      }
+      if (!s.themeColorOn) { this._themeStyle.textContent = ''; return; }
+      const hex = normalizeHex(s.themeColor) || '#8FA394';
+      const rgb = hexToRgb(hex);
+      const ink = relLum(rgb) > 0.55 ? '#20231f' : '#ffffff';      // 亮色底用深字，暗色底用白字
+      const hover = mix(hex, '#ffffff', 0.16);                       // 悬浮态略提亮
+      const soft = mix(hex, '#ffffff', 0.84);                        // 极浅底（chip/选中）
+      const softInk = mix(hex, '#000000', 0.25);                     // chip 文字（较深色）
+      this._themeStyle.textContent =
+        'body{' +
+        '--nws-accent:' + hex + ';' +
+        '--nws-accent-hover:' + hover + ';' +
+        '--nws-accent-ink:' + ink + ';' +
+        '--nws-accent-soft:' + soft + ';' +
+        '--nws-accent-soft-ink:' + softInk + ';' +
+        '--nws-accent-rgb:' + rgb.r + ',' + rgb.g + ',' + rgb.b + ';' +
+        '}';
+    } catch (e) { console.error('[小说写作台] 应用主题色失败:', e); }
+  }
+
+  /* ---------- v2.16 正文快捷分类（按勾选动态；v2.16.1 增加总开关；v2.16.2 支持自定义快捷项） ---------- */
+  quickClassifyTypes() {
+    if (!this.settings.quickClassifyOn) return [];   // 总开关关闭：右键/命令均不出现快捷项
+    const tq = this.settings.typeQuick;
+    const list = QUICK_CLASSIFY.filter((q) => tq ? !!tq[q.type] : DEFAULT_QUICK_TYPES.indexOf(q.type) >= 0)
+      .map((q) => ({ type: q.type, group: q.group, emoji: q.emoji, name: q.type }));
+    /* v2.16.2：自定义快捷项（用户在设置页添加；name 可自定义，type 必须是已有小库以继承颜色/模板/归类） */
+    const custom = Array.isArray(this.settings.quickCustom) ? this.settings.quickCustom : [];
+    custom.forEach((c) => {
+      if (!c || !c.type) return;
+      const type = String(c.type);
+      const group = groupOfLib(type);
+      list.push({ type, group, emoji: '⭐', name: String(c.name || type) });
+    });
+    return list;
+  }
+  isQuickType(type) {
+    const tq = this.settings.typeQuick;
+    return tq ? !!tq[type] : DEFAULT_QUICK_TYPES.indexOf(type) >= 0;
   }
 
   /* ---------- 数据 ---------- */
@@ -584,6 +775,20 @@ class NovelWriterStudio extends Plugin {
       });
       d.schemaVersion = 13;
     }
+    /* v2.16：正文快捷分类勾选表。默认只勾选 人物/情节/伏笔；已有用户保持旧行为不强制改写 */
+    {
+      const tq = (d.settings && d.settings.typeQuick) || null;
+      const map = Object.create(null);
+      (d.entityTypes || DEFAULT_ENTITY_TYPES).forEach((tp) => { map[tp] = tq ? !!tq[tp] : DEFAULT_QUICK_TYPES.indexOf(tp) >= 0; });
+      /* 默认三类必须存在于 map（「情节」不在 entityTypes 里，是大纲类型） */
+      DEFAULT_QUICK_TYPES.forEach((tp) => { if (map[tp] == null) map[tp] = tq ? !!tq[tp] : true; });
+      if (d.settings) d.settings.typeQuick = map;
+    }
+    /* v2.16.2：自定义快捷项兜底（数组，元素含 name/type，过滤非法项） */
+    if (d.settings) {
+      if (!Array.isArray(d.settings.quickCustom)) d.settings.quickCustom = [];
+      d.settings.quickCustom = d.settings.quickCustom.filter((c) => c && c.type && String(c.name || '').length <= 30);
+    }
     d.tracks = d.tracks || [];
     (d.lineNodes || []).forEach((n) => { if (!n.trackId) n.trackId = (n.line === 'space' ? 'trk_space' : 'trk_time'); });
     d.daily = d.daily || {};
@@ -599,11 +804,22 @@ class NovelWriterStudio extends Plugin {
     d.lineNodes = d.lineNodes || [];
     d.entities.forEach((e) => { e.bindings = e.bindings || []; e.aliases = e.aliases || []; e.group = e.group || groupOfLib(e.type); });
     d.outlines.forEach((o) => { o.bindings = o.bindings || []; o.color = o.color == null ? 3 : o.color; o.tags = o.tags || []; o.file = o.file || ''; });
-    d.plots.forEach((p) => { p.stages = p.stages || {}; p.roles = p.roles || []; p.tags = p.tags || []; p.chapters = p.chapters || []; });
+    d.plots.forEach((p) => {
+      p.stages = p.stages || {}; p.roles = p.roles || []; p.tags = p.tags || []; p.chapters = p.chapters || [];
+      /* v2.17：情节控制字段（主线/支线/暗线 · 所属主线 · 冲突链 · 转折点 · 节拍表 · 伏笔埋下/回收节奏） */
+      p.lineType = ['主线', '支线', '暗线'].indexOf(p.lineType) >= 0 ? p.lineType : '主线';
+      p.parentId = p.parentId || '';
+      p.beats = Array.isArray(p.beats) ? p.beats.filter((b) => b && (b.name || b.desc)) : [];
+      p.conflictChain = p.conflictChain || '';
+      p.turningPoints = p.turningPoints || '';
+      p.foreshadowPlant = p.foreshadowPlant || '';
+      p.foreshadowPayoff = p.foreshadowPayoff || '';
+    });
     d.lineNodes.forEach((n) => { n.bindings = n.bindings || []; });
     d.tracks.forEach((t) => { t.bindings = t.bindings || []; });
-    d.settings.visibleAxes = Array.isArray(d.settings.visibleAxes) && d.settings.visibleAxes.length
-      ? d.settings.visibleAxes : (d.settings.lineMode === 'time' ? ['time'] : d.settings.lineMode === 'space' ? ['space'] : ['time', 'space']);
+    /* v2.17：时空事件（时间×空间映射 + 自定义维度），默认空数组 */
+    d.stEvents = Array.isArray(d.stEvents) ? d.stEvents.filter((e) => e && e.id) : [];
+    d.settings.linesViewMode = ['axes', 'matrix', 'table'].indexOf(d.settings.linesViewMode) >= 0 ? d.settings.linesViewMode : 'axes';
     (d.notes || []).forEach((n) => { n.bindings = n.bindings || []; n.status = n.status || '待定'; });
     /* v2.7：批注数据（不改动原文，随章节保存） */
     d.annotations = Array.isArray(d.annotations) ? d.annotations : [];
@@ -1094,14 +1310,14 @@ class NovelWriterStudio extends Plugin {
   }
   async setActiveChapterTarget() {
     const f = this.app.workspace.getActiveFile();
-    if (!f) { new Notice('请先打开一个章节'); return; }
-    new InputModal(this.app, '本章目标字数（填 0 则用全局默认 ' + (this.settings.chapterTarget || DEFAULT_CHAPTER_TARGET) + '）',
+    if (!f) { new Notice(t('请先打开一个章节')); return; }
+    new InputModal(this.app, t('本章目标字数（填 0 则用全局默认 ') + (this.settings.chapterTarget || DEFAULT_CHAPTER_TARGET) + '）',
       String(this.targetOf(f.path)), async (v) => {
         const n = parseInt(v, 10);
-        if (isNaN(n) || n < 0) { new Notice('请输入有效数字'); return; }
+        if (isNaN(n) || n < 0) { new Notice(t('请输入有效数字')); return; }
         await this.setMeta(f.path, { target: n });
         await this.rescan(true);
-        new Notice(n > 0 ? '本章目标：' + fmt(n) + ' 字' : '本章目标已跟随全局默认');
+        new Notice(n > 0 ? t('本章目标：') + fmt(n) + t(' 字') : t('本章目标已跟随全局默认'));
       }).open();
   }
   /* 记录码字增量（由 CM6 在正文变更时调用），按天累计；v2.13 另记小时分布/工作日周末 */
@@ -1411,6 +1627,39 @@ class NovelWriterStudio extends Plugin {
     /* v2.8：键盘声移入打字音效（playTypeSound），背景音不再包含 */
   }
 
+  /* ---------- v2.17 写作场景（预设 + 自定义；场景 = 壁纸/背景音/打字音效/打字模式/全屏 的打包） ---------- */
+  sceneList() { return SCENE_PRESETS.concat(this.settings.customScenes || []); }
+  sceneById(id) { return this.sceneList().find((s) => s.id === id) || null; }
+  async applyScene(id) {
+    const s = this.sceneById(id); if (!s) return;
+    this.settings.focusScene = id;
+    this.settings.focusWallpaper = s.wallpaper;
+    this.settings.focusSound = s.sound;
+    this.settings.typeSound = s.typeSound || 'off';
+    this.settings.typingMode = !!s.typingMode;
+    this.settings.focusFullscreen = s.fullscreen !== false;
+    await this.saveNow();
+    new Notice(t('已切换写作场景：') + s.name);
+  }
+  async saveSceneAs(name) {
+    const s = {
+      id: 'scn_c' + Date.now(), name: (name || '自定义场景').trim().slice(0, 20),
+      wallpaper: this.settings.focusWallpaper, sound: this.settings.focusSound,
+      typeSound: this.settings.typeSound || 'off', typingMode: !!this.settings.typingMode,
+      fullscreen: this.settings.focusFullscreen !== false
+    };
+    this.settings.customScenes = (this.settings.customScenes || []).concat([s]);
+    this.settings.focusScene = s.id;
+    await this.saveNow();
+    new Notice(t('已保存自定义场景：') + s.name);
+    return s;
+  }
+  async deleteScene(id) {
+    this.settings.customScenes = (this.settings.customScenes || []).filter((s) => s.id !== id);
+    if (this.settings.focusScene === id) this.settings.focusScene = '';
+    await this.saveNow();
+  }
+
   /* ---------- 专注会话（专注模式 / 番茄钟共用计时） ---------- */
   startFocusSession(mode, seconds) {
     this.stopFocusSession(true);
@@ -1442,7 +1691,7 @@ class NovelWriterStudio extends Plugin {
       if (s.left <= 0) { this.finishFocusSession(); return; }
       this.refreshProgressBar();
     }, 1000);
-    new Notice('已开始' + (mode === 'focus' ? '专注' : '计时') + '：' + fmtDur(seconds));
+    new Notice(t('已开始') + (mode === 'focus' ? t('专注') : t('计时')) + t('：') + fmtDur(seconds));
   }
   pauseFocusSession() {
     const s = this.focusState;
@@ -1461,7 +1710,7 @@ class NovelWriterStudio extends Plugin {
     this.data.focusSessions.push({ ts: Date.now(), mode, seconds: s.seconds || 0 });
     if (this.data.focusSessions.length > 500) this.data.focusSessions.splice(0, this.data.focusSessions.length - 500);
     this.stopFocusSession(false);
-    new Notice('⏰ 时间到！本次' + (mode === 'focus' ? '专注' : '计时') + '结束');
+    new Notice(t('⏰ 时间到！本次') + (mode === 'focus' ? t('专注') : t('计时')) + t('结束'));
     try { const a = this.ensureAudio(); if (a) { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; g.gain.value = 0.3; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + 0.5); } } catch (e) {}
   }
   stopFocusSession(silent) {
@@ -1474,14 +1723,14 @@ class NovelWriterStudio extends Plugin {
     this.focusState = { active: false, wallpaper: '', sound: null, timer: null, endAt: 0, seconds: 0, paused: false, left: 0, mode: '' };
     if (this.hudEl) this.hudEl.style.display = 'none';
     this.scheduleSave();
-    if (!silent) new Notice('专注已结束');
+    if (!silent) new Notice(t('专注已结束'));
     this.refreshProgressBar();
     this.refreshViews();
   }
 
   /* ---------- 卷 / 章 ---------- */
   async newChapter(volume) {
-    const body = normalizePath(this.settings.folderBody || '正文');
+    const body = normalizePath(this.settings.folderBody || t('正文'));
     const inRoot = !volume || volume === '（未分卷）';
     const dir = inRoot ? body : normalizePath(body + '/' + volume);
     try {
@@ -1490,26 +1739,26 @@ class NovelWriterStudio extends Plugin {
       while (this.app.vault.getAbstractFileByPath(path)) { name = '未命名章节 ' + (++i); path = normalizePath(dir + '/' + name + '.md'); }
       const f = await this.app.vault.create(path, '');
       await this.setMeta(path, { status: 0 });
-      new Notice('已创建空章：' + name);
+      new Notice(t('已创建空章：') + name);
       await this.app.workspace.getLeaf('tab').openFile(f);
-    } catch (e) { new Notice('创建失败：' + ((e && e.message) || e)); }
+    } catch (e) { new Notice(t('创建失败：') + ((e && e.message) || e)); }
   }
   async newVolume() {
-    const body = normalizePath(this.settings.folderBody || '正文');
+    const body = normalizePath(this.settings.folderBody || t('正文'));
     let name = '新卷', i = 1;
     while (this.app.vault.getAbstractFileByPath(normalizePath(body + '/' + name))) { name = '新卷 ' + (++i); }
     try { await this.ensureFolder(normalizePath(body + '/' + name)); await this.newChapter(name); }
-    catch (e) { new Notice('创建失败：' + e.message); }
+    catch (e) { new Notice(t('创建失败：') + e.message); }
   }
   async renameVolume(volume, newName) {
     if (!newName || !newName.trim()) return;
     newName = newName.trim();
     if (newName === volume || newName === '（未分卷）') return;
-    const body = normalizePath(this.settings.folderBody || '正文');
+    const body = normalizePath(this.settings.folderBody || t('正文'));
     /* 未分卷 → 新建卷文件夹，把正文根目录下所有 md 章节移入 */
     if (volume === '（未分卷）') {
       const to = normalizePath(body + '/' + newName);
-      if (this.app.vault.getAbstractFileByPath(to)) { new Notice('目标卷名已存在'); return; }
+      if (this.app.vault.getAbstractFileByPath(to)) { new Notice(t('目标卷名已存在')); return; }
       try {
         await this.ensureFolder(to);
         const migrated = Object.create(null);
@@ -1525,15 +1774,15 @@ class NovelWriterStudio extends Plugin {
         Object.assign(this.data.chapters, migrated);
         await this.saveNow();
         await this.rescan(true);
-        new Notice('已将 ' + roots.length + ' 章移入新卷：' + newName);
-      } catch (e) { new Notice('操作失败：' + (e && e.message || e)); }
+        new Notice(t('已将 ') + roots.length + t(' 章移入新卷：') + newName);
+      } catch (e) { new Notice(t('操作失败：') + (e && e.message || e)); }
       return;
     }
     const from = normalizePath(body + '/' + volume);
     const to = normalizePath(body + '/' + newName);
     const folder = this.app.vault.getAbstractFileByPath(from);
-    if (!(folder instanceof TFolder)) { new Notice('未找到卷文件夹：' + volume); return; }
-    if (this.app.vault.getAbstractFileByPath(to)) { new Notice('目标卷名已存在'); return; }
+    if (!(folder instanceof TFolder)) { new Notice(t('未找到卷文件夹：') + volume); return; }
+    if (this.app.vault.getAbstractFileByPath(to)) { new Notice(t('目标卷名已存在')); return; }
     try {
       await this.app.vault.rename(folder, to);
       const migrated = Object.create(null);
@@ -1544,24 +1793,24 @@ class NovelWriterStudio extends Plugin {
       this.data.entities.forEach((e) => (e.bindings || []).forEach((b) => { if (b.kind === 'chapter') b.id = fixPath(b.id); }));
       await this.saveNow();
       await this.rescan(true);
-      new Notice('卷已重命名为：' + newName);
-    } catch (e) { new Notice('重命名失败：' + e.message); }
+      new Notice(t('卷已重命名为：') + newName);
+    } catch (e) { new Notice(t('重命名失败：') + e.message); }
   }
   /* 把一章移动到另一卷（newVolume 为卷名；'（未分卷）' 表示移回正文根目录） */
   async moveChapter(path, newVolume) {
-    const body = normalizePath(this.settings.folderBody || '正文');
+    const body = normalizePath(this.settings.folderBody || t('正文'));
     const f = this.app.vault.getAbstractFileByPath(path);
-    if (!(f instanceof TFile)) { new Notice('未找到章节文件'); return; }
+    if (!(f instanceof TFile)) { new Notice(t('未找到章节文件')); return; }
     const curVolume = this.volumeOfPath(path);
-    if (curVolume === newVolume) { new Notice('已在该卷中'); return; }
+    if (curVolume === newVolume) { new Notice(t('已在该卷中')); return; }
     const np = newVolume === '（未分卷）'
       ? normalizePath(body + '/' + f.name)
       : normalizePath(body + '/' + newVolume + '/' + f.name);
     if (newVolume !== '（未分卷）') {
       const dir = this.app.vault.getAbstractFileByPath(normalizePath(body + '/' + newVolume));
-      if (!(dir instanceof TFolder)) { new Notice('未找到卷：' + newVolume); return; }
+      if (!(dir instanceof TFolder)) { new Notice(t('未找到卷：') + newVolume); return; }
     }
-    if (this.app.vault.getAbstractFileByPath(np)) { new Notice('目标卷已有同名文件：' + f.name); return; }
+    if (this.app.vault.getAbstractFileByPath(np)) { new Notice(t('目标卷已有同名文件：') + f.name); return; }
     try {
       await this.app.vault.rename(f, np);
       /* 迁移章节数据（状态/目标/计时）与各处绑定引用 */
@@ -1571,11 +1820,11 @@ class NovelWriterStudio extends Plugin {
       this.data.entities.forEach((e) => (e.bindings || []).forEach((b) => { if (b.kind === 'chapter') b.id = fix(b.id); }));
       await this.saveNow();
       await this.rescan(true);
-      new Notice('已移动「' + f.name.replace(/\.md$/, '') + '」→ ' + newVolume);
-    } catch (e) { new Notice('移动失败：' + (e && e.message || e)); }
+      new Notice(t('已移动「') + f.name.replace(/\.md$/, '') + '」→ ' + newVolume);
+    } catch (e) { new Notice(t('移动失败：') + (e && e.message || e)); }
   }
   volumeOfPath(path) {
-    const body = (this.settings.folderBody || '正文') + '/';
+    const body = (this.settings.folderBody || t('正文')) + '/';
     if (path.indexOf(body) !== 0) return '—';
     const rel = path.slice(body.length);
     const i = rel.indexOf('/');
@@ -1589,9 +1838,9 @@ class NovelWriterStudio extends Plugin {
       try {
         const fileExpl = this.app.workspace.getLeavesOfType('file-explorer')[0];
         if (fileExpl && fileExpl.view && fileExpl.view.revealInFolder) fileExpl.view.revealInFolder(f);
-        else new Notice('文件夹：' + path);
-      } catch (e) { new Notice('文件夹：' + path); }
-    } else new Notice('路径不存在：' + path);
+        else new Notice(t('文件夹：') + path);
+      } catch (e) { new Notice(t('文件夹：') + path); }
+    } else new Notice(t('路径不存在：') + path);
   }
   async openChapterByPath(path) {
     const f = this.app.vault.getAbstractFileByPath(path);
@@ -1620,13 +1869,13 @@ class NovelWriterStudio extends Plugin {
       await this.writeEntityFile(e, false);
       await this.saveNow(); await this.rescan(true);
     }
-    new Notice('已归类「' + text + '」→ ' + (group || groupOfLib(type)) + ' / ' + type + '（设定目录已同步）');
+    new Notice(t('已归类「') + text + t('」→ ') + (group || groupOfLib(type)) + ' / ' + type + t('（设定目录已同步）'));
   }
   async recolorSelection(text, color) {
     let e = this.entityByName(text);
-    if (!e) e = await this.addEntity(text, this.data.entityTypes[0] || '人物');
+    if (!e) e = await this.addEntity(text, this.data.entityTypes[0] || t('人物'));
     if (e) { e.color = color; await this.writeEntityFile(e, false); await this.saveNow(); this.entityVersion++; this.refreshViews(); }
-    new Notice('「' + text + '」' + (color === -1 ? '已设为无颜色（加粗+下划线）' : '高亮已改为' + PALETTE_NAMES[color] + '色'));
+    new Notice(t('「') + text + t('」') + (color === -1 ? t('已设为无颜色（加粗+下划线）') : t('高亮已改为') + t(PALETTE_NAMES[color]) + t('色')));
   }
   async updateEntity(id, patch) {
     const e = this.entityById(id); if (!e) return;
@@ -1663,6 +1912,14 @@ class NovelWriterStudio extends Plugin {
       tags: fields.tags || [],
       color: fields.color == null ? 3 : fields.color,
       note: fields.note || '',
+      /* v2.17 情节控制字段 */
+      lineType: ['主线', '支线', '暗线'].indexOf(fields.lineType) >= 0 ? fields.lineType : '主线',
+      parentId: fields.parentId || '',
+      beats: Array.isArray(fields.beats) ? fields.beats : [],
+      conflictChain: fields.conflictChain || '',
+      turningPoints: fields.turningPoints || '',
+      foreshadowPlant: fields.foreshadowPlant || '',
+      foreshadowPayoff: fields.foreshadowPayoff || '',
       created: Date.now()
     };
     this.data.plots.push(p);
@@ -1797,6 +2054,49 @@ class NovelWriterStudio extends Plugin {
     const vd = trackViewDef(n.view || 'event');
     const parts = (n.bindings || []).map((b) => b.name || b.id);
     return parts.length ? '围绕' + vd.node + '：' + parts.join('、') : '（未绑定对象，点「绑定」关联人物/情节/线索/伏笔；视角：' + vd.name + '）';
+  }
+
+  /* ========== v2.17 时空事件（纵轴时间 × 横轴空间 的映射；含自定义维度） ==========
+     事件 = { id, timeNode, spaceNode, dims:{trackId:nodeId}, label, content, bindings, causal(因果), result(结果), impact(影响) }
+     时间/空间可只填其一（两轴相互独立）；都填 = 该事件落在时空交叉格上（即时间与空间存在映射）。 */
+  stEventById(id) { return (this.data.stEvents || []).find((e) => e.id === id); }
+  async addStEvent(fields) {
+    const e = {
+      id: uid(),
+      timeNode: fields.timeNode || '',
+      spaceNode: fields.spaceNode || '',
+      dims: fields.dims || {},
+      label: (fields.label || '新事件').trim(),
+      content: fields.content || '',
+      bindings: fields.bindings || [],
+      causal: fields.causal || '',
+      result: fields.result || '',
+      impact: fields.impact || '',
+      created: Date.now()
+    };
+    this.data.stEvents = (this.data.stEvents || []).concat([e]);
+    await this.saveNow(); this.refreshViews();
+    return e;
+  }
+  async updateStEvent(id, patch) { const e = this.stEventById(id); if (!e) return; Object.assign(e, patch); await this.saveNow(); this.refreshViews(); }
+  async deleteStEvent(id) {
+    this.data.stEvents = (this.data.stEvents || []).filter((e) => e.id !== id);
+    await this.saveNow(); this.refreshViews();
+  }
+  /* 时空事件 → 表格行（时间/地点/人物/事件/因果/结果/影响 + 自定义维度列） */
+  stEventRow(e, dimTracks) {
+    const tn = e.timeNode ? this.lineNodeById(e.timeNode) : null;
+    const sn = e.spaceNode ? this.lineNodeById(e.spaceNode) : null;
+    return {
+      time: tn ? (tn.at ? tn.at + ' · ' : '') + tn.label : '—',
+      space: sn ? sn.label : '—',
+      roles: (e.bindings || []).map((b) => b.name || b.id).join('、') || '—',
+      event: e.label + (e.content ? '：' + e.content : ''),
+      causal: e.causal || '—',
+      result: e.result || '—',
+      impact: e.impact || '—',
+      dims: (dimTracks || []).map((t) => { const dn = e.dims && e.dims[t.id] ? this.lineNodeById(e.dims[t.id]) : null; return dn ? dn.label : '—'; })
+    };
   }
 
   /* ---------- 大纲 ---------- */
@@ -1985,7 +2285,7 @@ class NovelWriterStudio extends Plugin {
     await this.writeNoteFile(note, true);
     this.data.notes.unshift(note);
     await this.saveNow(); this.refreshViews();
-    new Notice('已收集到灵感笔记：' + clean.slice(0, 18) + (clean.length > 18 ? '…' : ''));
+    new Notice(t('已收集到灵感笔记：') + clean.slice(0, 18) + (clean.length > 18 ? '…' : ''));
     return note;
   }
   noteById(id) { return (this.data.notes || []).find((n) => n.id === id); }
@@ -2005,7 +2305,7 @@ class NovelWriterStudio extends Plugin {
     await this.saveNow(); this.refreshViews();
   }
   /* 灵感状态：待定 → 采用 / 放弃 */
-  async setNoteStatus(id, status) { await this.updateNote(id, { status }); new Notice('灵感状态：' + status); }
+  async setNoteStatus(id, status) { await this.updateNote(id, { status }); new Notice(t('灵感状态：') + t(status)); }
 
   /* ---------- 视图与命令 ---------- */
   async activateView(type) {
@@ -2036,49 +2336,49 @@ class NovelWriterStudio extends Plugin {
     reg('new-chapter', '新建章节（空章）', () => this.newChapter('（未分卷）'));
     reg('new-volume', '新建卷', () => this.newVolume());
     reg('open-inspiration', '打开灵感目录', () => this.openPath(this.inspirationRoot()));
-    reg('sync-setting-files', '同步设定库文件（从 md 重建索引）', async () => { await this.syncFilesToIndex(); await this.ensureEntityFiles(); await this.rescan(true); new Notice('设定库文件已同步'); });
-    reg('sync-outline-files', '同步大纲文件（从 md 重建索引）', async () => { await this.syncOutlineFiles(); await this.ensureOutlineFiles(); await this.refreshViews(); new Notice('大纲文件已同步'); });
+    reg('sync-setting-files', '同步设定库文件（从 md 重建索引）', async () => { await this.syncFilesToIndex(); await this.ensureEntityFiles(); await this.rescan(true); new Notice(t('设定库文件已同步')); });
+    reg('sync-outline-files', '同步大纲文件（从 md 重建索引）', async () => { await this.syncOutlineFiles(); await this.ensureOutlineFiles(); await this.refreshViews(); new Notice(t('大纲文件已同步')); });
     reg('sync-all-files', '同步全部文件（设定 + 大纲）', async () => {
       await this.syncFilesToIndex(); await this.syncOutlineFiles();
       await this.ensureEntityFiles(); await this.ensureOutlineFiles();
-      await this.rescan(true); new Notice('设定库与大纲文件均已同步');
+      await this.rescan(true); new Notice(t('设定库与大纲文件均已同步'));
     });
     reg('open-setting-root', '打开设定库文件夹', () => this.openPath(normalizePath(this.settings.folderSetting)));
     reg('open-outline-root', '打开大纲文件夹', () => this.openPath(normalizePath(this.settings.folderOutline)));
     /* v2.1 */
     reg('open-stats', '打开数据中心（热力图/码字统计）', () => this.activateView(VIEW_STATS));
-    reg('focus-mode', '专注模式（壁纸+音效+实时速度）', () => new FocusModal(this.app, this, 'focus').open());
-    reg('pomodoro', '番茄钟', () => new FocusModal(this.app, this, 'pomodoro').open());
+    reg('focus-mode', '专注写作 · 自由专注（写作场景+壁纸+音效）', () => new FocusModal(this.app, this, 'focus').open());
+    reg('pomodoro', '专注写作 · 番茄钟', () => new FocusModal(this.app, this, 'pomodoro').open());
     reg('set-chapter-target', '设定本章目标字数', () => this.setActiveChapterTarget());
     reg('chapter-stats', '本章数据统计（目标/速度/专注/设定分布/Top10）', () => {
       const f = this.app.workspace.getActiveFile();
-      if (!f || !this.isChapterPath(f.path)) { new Notice('请先打开正文目录下的一个章节'); return; }
+      if (!f || !this.isChapterPath(f.path)) { new Notice(t('请先打开正文目录下的一个章节')); return; }
       new ChapterStatsModal(this.app, this, f.path).open();
     });
     reg('move-chapter', '移动当前章节到其他分卷', () => {
       const f = this.app.workspace.getActiveFile();
-      if (!f || !this.isChapterPath(f.path)) { new Notice('请先打开正文目录下的一个章节'); return; }
+      if (!f || !this.isChapterPath(f.path)) { new Notice(t('请先打开正文目录下的一个章节')); return; }
       new ChapterMoveModal(this.app, this, f.path).open();
     });
     reg('open-annots', '打开批注列表', () => this.activateView(VIEW_ANNOT));
     reg('add-annotation', '给选中文字添加批注', () => {
       const md = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (!md || !md.editor) { new Notice('请先在正文中选中一段文字'); return; }
+      if (!md || !md.editor) { new Notice(t('请先在正文中选中一段文字')); return; }
       const ed = md.editor;
       const sel = ed.getSelection();
-      if (!sel || !sel.trim()) { new Notice('请先选中一段文字'); return; }
+      if (!sel || !sel.trim()) { new Notice(t('请先选中一段文字')); return; }
       let from = 0, to = 0;
       try { from = ed.posToOffset(ed.getCursor('from')); to = ed.posToOffset(ed.getCursor('to')); } catch (e) { /* 忽略 */ }
       new AnnotationModal(this.app, this, this.app.workspace.getActiveFile().path, sel.trim(), from, to).open();
     });
     reg('focus-toggle', '开始/结束专注', () => this.focusState.active ? this.stopFocusSession() : (new FocusModal(this.app, this, 'focus').open()));
-    reg('sync-appearances', '立即刷新设定笔记的出场章节统计', async () => { await this.syncEntityAppearances(); new Notice('出场章节统计已更新'); });
+    reg('sync-appearances', '立即刷新设定笔记的出场章节统计', async () => { await this.syncEntityAppearances(); new Notice(t('出场章节统计已更新')); });
     /* v2.2：选字操作的命令面板兜底（右键菜单失效时可用，也可绑快捷键） */
     const selCmd = (id, name, fn) => this.addCommand({
       id, name,
       editorCallback: (editor) => {
         const s = editor.getSelection ? editor.getSelection() : '';
-        if (!s || !s.trim()) { new Notice('请先在正文选中文字'); return; }
+        if (!s || !s.trim()) { new Notice(t('请先在正文选中文字')); return; }
         fn(s.trim());
       }
     });
@@ -2087,7 +2387,7 @@ class NovelWriterStudio extends Plugin {
       const note = await this.captureInspiration(text, file ? file.path : '');
       if (note) new InspirationEditModal(this.app, this, note).open();
     });
-    QUICK_CLASSIFY.forEach((q) => selCmd('sel-to-' + q.type, '【选中文字】设为' + q.type,
+    this.quickClassifyTypes().forEach((q) => selCmd('sel-to-' + q.type, '【选中文字】设为' + q.type,
       (text) => this.classifySelection(text, q.type, q.group)));
     selCmd('sel-to-entity', '【选中文字】设为设定（自选大类）', (text) => {
       new EntityCreateModal(this.app, this, null, null, text).open();
@@ -2122,32 +2422,38 @@ class NovelWriterStudio extends Plugin {
           new AnnotationModal(p.app, p, file ? file.path : '', text, from, to).open();
         }));
       menu.addSeparator();
-      QUICK_CLASSIFY.forEach((q) => {
-        menu.addItem((item) => item.setTitle(q.emoji + ' 设为' + q.type).setIcon('tag')
-          .onClick(async () => { await p.classifySelection(text, q.type, q.group); }));
-      });
-      menu.addSeparator();
-      /* 按大类 → 小库 两级归类（覆盖全部类型；无法归类归入「独立」） */
-      ENTITY_GROUPS.forEach((g) => {
-        menu.addItem((item) => {
-          item.setTitle(g.emoji + ' 设为设定 · ' + g.name + ' ▸').setIcon('tag');
-          const sub = item.setSubmenu();
-          libsOfGroup(g.name).forEach((l) => {
-            const def = LIB_BY_NAME[l];
-            sub.addItem((si) => si.setTitle((def ? def.emoji + ' ' : '') + l).onClick(async () => { await p.classifySelection(text, l, g.name); }));
+      /* v2.16.1：总开关控制——关闭时隐藏快捷分类与两级归类，仅保留一个「自定义设定」入口 */
+      if (p.settings.quickClassifyOn) {
+        /* v2.16：只显示设置页勾选「正文快捷显示」的类型（默认 人物/情节/伏笔）；v2.16.2 合并自定义快捷项（⭐） */
+        p.quickClassifyTypes().forEach((q) => {
+          menu.addItem((item) => item.setTitle(q.emoji + ' ' + t('设为') + ' ' + t(q.name)).setIcon('tag')
+            .onClick(async () => { await p.classifySelection(text, q.type, q.group); }));
+        });
+        menu.addSeparator();
+      }
+      /* v2.16.3：大类▸小库两级归类 + 自定义入口——设置开关控制，默认隐藏（quickClassifyOn 关闭时也不出现） */
+      if (p.settings.quickClassifyOn && p.settings.groupClassifyOn) {
+        ENTITY_GROUPS.forEach((g) => {
+          menu.addItem((item) => {
+            item.setTitle(g.emoji + ' ' + t('设为设定') + ' · ' + t(g.name) + ' ▸').setIcon('tag');
+            const sub = item.setSubmenu();
+            libsOfGroup(g.name).forEach((l) => {
+              const def = LIB_BY_NAME[l];
+              sub.addItem((si) => si.setTitle((def ? def.emoji + ' ' : '') + t(l)).onClick(async () => { await p.classifySelection(text, l, g.name); }));
+            });
           });
         });
-      });
-      menu.addItem((item) => item.setTitle('🖋️ 设为设定（自选大类…）').setIcon('plus')
-        .onClick(() => new EntityCreateModal(p.app, p, null, null, text).open()));
+        menu.addItem((item) => item.setTitle('🖋️ ' + t('设为设定（自定义）')).setIcon('plus')
+          .onClick(() => new EntityCreateModal(p.app, p, null, null, text).open()));
+      }
       try {
         menu.addItem((item) => {
           item.setTitle('🎨 更换高亮颜色').setIcon('palette');
           const sub = item.setSubmenu();
-          PALETTE_NAMES.forEach((cn, ci) => sub.addItem((si) => si.setTitle(cn + '色').onClick(async () => { await p.recolorSelection(text, ci); })));
+          PALETTE_NAMES.forEach((cn, ci) => sub.addItem((si) => si.setTitle(t(cn) + t('色')).onClick(async () => { await p.recolorSelection(text, ci); })));
         });
       } catch (e) {
-        PALETTE_NAMES.forEach((cn, ci) => menu.addItem((item) => item.setTitle('🎨 高亮为' + cn + '色').onClick(async () => { await p.recolorSelection(text, ci); })));
+        PALETTE_NAMES.forEach((cn, ci) => menu.addItem((item) => item.setTitle('🎨 ' + t('高亮为') + t(cn) + t('色')).onClick(async () => { await p.recolorSelection(text, ci); })));
       }
     }));
   }
@@ -2264,14 +2570,14 @@ class NovelWriterStudio extends Plugin {
     await this.saveNow();
     this.entityVersion++;   // 触发装饰层重建
     this.refreshViews();
-    new Notice('已添加批注');
+    new Notice(t('已添加批注'));
     return a;
   }
   async updateAnnotation(id, patch) { const a = this.annotById(id); if (!a) return; Object.assign(a, patch); await this.saveNow(); this.entityVersion++; this.refreshViews(); }
   async deleteAnnotation(id) {
     this.data.annotations = (this.data.annotations || []).filter((a) => a.id !== id);
     await this.saveNow(); this.entityVersion++; this.refreshViews();
-    new Notice('批注已删除');
+    new Notice(t('批注已删除'));
   }
   /* 从目录/面板跳回原文批注位置：打开文件后滚动并选中该段 */
   async jumpToAnnotation(a) {
@@ -2283,7 +2589,7 @@ class NovelWriterStudio extends Plugin {
         const ed = md.editor, doc = ed.getValue();
         let idx = doc.indexOf(a.quote, Math.max(0, Math.min(a.from || 0, doc.length)));
         if (idx < 0) idx = doc.indexOf(a.quote);
-        if (idx < 0) { new Notice('原文已修改，找不到该批注的原文位置'); return; }
+        if (idx < 0) { new Notice(t('原文已修改，找不到该批注的原文位置')); return; }
         const from = ed.offsetToPos(idx), to = ed.offsetToPos(idx + a.quote.length);
         ed.setSelection(from, to);
         ed.scrollIntoView({ from: { line: from.line, ch: 0 }, to: { line: from.line, ch: 0 } }, true);
@@ -2552,6 +2858,8 @@ function setViewRoot(view, html) {
   const root = el('div', 'nws-root nws-view');
   root.innerHTML = html;
   view.contentEl.appendChild(root);
+  /* v2.16.3：英文模式下每次渲染即翻译（视图数据刷新后仍保持英文） */
+  try { trNode(root); } catch (e) {}
   return root;
 }
 
@@ -2559,7 +2867,7 @@ function setViewRoot(view, html) {
 class CatalogView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
   getViewType() { return VIEW_CATALOG; }
-  getDisplayText() { return '写作台 · 目录'; }
+  getDisplayText() { return t('写作台 · 目录'); }
   getIcon() { return 'folder-tree'; }
   async onOpen() { this.render(); }
   render() {
@@ -2666,17 +2974,17 @@ class CatalogView extends ItemView {
       const path = sel.dataset.status;
       const st = parseInt(sel.value, 10);
       await p.setMeta(path, { status: st });
-      new Notice('状态 → ' + CH_STATUS[st]);
+      new Notice(t('状态 → ') + CH_STATUS[st]);
       this.render();
     }));
     /* 字数标签：点击设目标 */
     root.querySelectorAll('[data-target]').forEach((b) => b.addEventListener('click', async (e) => {
       e.stopPropagation();
       const path = b.dataset.target;
-      new InputModal(this.app, '本章目标字数（0=跟随全局）', String(p.targetOf(path)), async (v) => {
+      new InputModal(this.app, t('本章目标字数（0=跟随全局）'), String(p.targetOf(path)), async (v) => {
         const n = parseInt(v, 10); if (isNaN(n) || n < 0) return;
         await p.setMeta(path, { target: n }); await p.rescan(true);
-        new Notice(n > 0 ? '目标已设为 ' + fmt(n) + ' 字' : '已跟随全局目标');
+        new Notice(n > 0 ? t('目标已设为 ') + fmt(n) + t(' 字') : t('已跟随全局目标'));
       }).open();
     }));
     root.querySelectorAll('[data-act="newchap"]').forEach((b) => b.addEventListener('click', () => p.newChapter(b.dataset.vol)));
@@ -2699,7 +3007,7 @@ class CatalogView extends ItemView {
 class OutlineView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.type = '全部'; }
   getViewType() { return VIEW_OUTLINE; }
-  getDisplayText() { return '写作台 · 大纲'; }
+  getDisplayText() { return t('写作台 · 大纲'); }
   getIcon() { return 'list-tree'; }
   async onOpen() { this.render(); }
   render() {
@@ -2746,7 +3054,7 @@ class OutlineView extends ItemView {
     root.querySelector('[data-act="newtype"]').addEventListener('click', () => {
       new InputModal(this.app, '新建大纲类型', '类型名', (name) => {
         if (!name || !name.trim()) return;
-        if (p.data.outlineTypes.indexOf(name.trim()) >= 0) { new Notice('类型已存在'); return; }
+        if (p.data.outlineTypes.indexOf(name.trim()) >= 0) { new Notice(t('类型已存在')); return; }
         p.data.outlineTypes.push(name.trim()); p.saveNow(); this.render();
       }).open();
     });
@@ -2773,7 +3081,7 @@ class OutlineView extends ItemView {
 class EntitiesView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.color = -1; this.q = ''; this.group = '全部'; }
   getViewType() { return VIEW_ENTITIES; }
-  getDisplayText() { return '写作台 · 设定库'; }
+  getDisplayText() { return t('写作台 · 设定库'); }
   getIcon() { return 'shapes'; }
   async onOpen() { this.render(); }
   render() {
@@ -2859,7 +3167,7 @@ class EntitiesView extends ItemView {
 class NotesView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.status = '全部'; }
   getViewType() { return VIEW_NOTES; }
-  getDisplayText() { return '写作台 · 灵感'; }
+  getDisplayText() { return t('写作台 · 灵感'); }
   getIcon() { return 'lightbulb'; }
   async onOpen() { this.render(); }
   render() {
@@ -2910,7 +3218,7 @@ class NotesView extends ItemView {
 class PlotsView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.q = ''; }
   getViewType() { return VIEW_PLOTS; }
-  getDisplayText() { return '写作台 · 情节'; }
+  getDisplayText() { return t('写作台 · 情节'); }
   getIcon() { return 'git-branch'; }
   async onOpen() { this.render(); }
   render() {
@@ -2932,11 +3240,17 @@ class PlotsView extends ItemView {
         '<div class="nws-plot-h">' +
         '<span class="nws-cdot" style="background:' + PALETTE[c % 6] + '"></span>' +
         '<span class="nws-plot-name">🧩 ' + escapeHtml(pl.name) + '</span>' +
+        '<span class="nws-tag">' + escapeHtml(pl.lineType || '主线') + '</span>' +
+        (pl.parentId && p.plotById(pl.parentId) ? '<span class="nws-tag" title="所属主线">↳ ' + escapeHtml(p.plotById(pl.parentId).name) + '</span>' : '') +
+        (pl.beats && pl.beats.length ? '<span class="nws-tag">🎵 ' + pl.beats.length + ' 节拍</span>' : '') +
+        (pl.foreshadowPlant ? '<span class="nws-tag" title="' + escapeHtml(pl.foreshadowPayoff || '已埋伏笔') + '">🔮 伏笔</span>' : '') +
         '<span class="nws-tag nws-tag-stat">' + done + '/4 阶段</span>' +
         '<span class="nws-sp"></span>' +
         '<button class="nws-btn sm" data-pa="edit">✎ 编辑</button>' +
         '<button class="nws-btn sm" data-pa="del">删</button></div>' +
         '<div class="nws-stages">' + stageBtns + '</div>' +
+        (pl.conflictChain ? '<div class="nws-plot-note">⚔️ 冲突链：' + escapeHtml(pl.conflictChain) + '</div>' : '') +
+        (pl.turningPoints ? '<div class="nws-plot-note">🌀 转折点：' + escapeHtml(pl.turningPoints) + '</div>' : '') +
         (roles || chs || tags ? '<div class="nws-plot-meta">' + roles + chs + tags + '</div>' : '') +
         (pl.note ? '<div class="nws-plot-note">📝 ' + escapeHtml(pl.note) + '</div>' : '') +
         '</div>';
@@ -2968,7 +3282,7 @@ class PlotsView extends ItemView {
 class LinesView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
   getViewType() { return VIEW_LINES; }
-  getDisplayText() { return '写作台 · 时间/空间/情绪线'; }
+  getDisplayText() { return t('写作台 · 时间/空间/情绪线'); }
   getIcon() { return 'git-merge'; }
   async onOpen() { this.render(); }
   nodeHtml(n) {
@@ -3013,7 +3327,24 @@ class LinesView extends ItemView {
       '<div class="nws-track-add"><button class="nws-btn sm pri" data-act="addline" data-line="' + t.id + '">＋ 添加' + escapeHtml(vd.node) + '</button></div>' +
       '<div class="nws-linetrack">' + body + '</div></div>';
   }
+  /* v2.17：视图分发 —— 分轴列表 / 时空矩阵（纵轴时间×横轴空间） / 时空事件表 */
   render() {
+    const mode = this.plugin.settings.linesViewMode || 'axes';
+    if (mode === 'matrix') return this.renderMatrix();
+    if (mode === 'table') return this.renderTable();
+    return this.renderAxes();
+  }
+  viewSwitchHtml() {
+    const cur = this.plugin.settings.linesViewMode || 'axes';
+    return '<div class="nws-filters"><span style="font-size:11px;color:var(--text-muted);align-self:center">组合方式：</span>' +
+      '<button class="nws-fbtn ' + (cur === 'axes' ? 'on' : '') + '" data-lvm="axes" title="按轴分组，每条线一列（相互独立）">🗂 分轴列表</button>' +
+      '<button class="nws-fbtn ' + (cur === 'matrix' ? 'on' : '') + '" data-lvm="matrix" title="纵轴=时间线，横轴=空间线；交叉格=时空映射事件">⏳×🗺️ 时空矩阵</button>' +
+      '<button class="nws-fbtn ' + (cur === 'table' ? 'on' : '') + '" data-lvm="table" title="时间/地点/人物/事件/因果/结果/影响">📋 时空事件表</button></div>';
+  }
+  bindViewSwitch(root) {
+    root.querySelectorAll('[data-lvm]').forEach((b) => b.addEventListener('click', () => { this.plugin.settings.linesViewMode = b.dataset.lvm; this.plugin.saveNow(); this.render(); }));
+  }
+  renderAxes() {
     const p = this.plugin;
     const tracks = p.visibleTracks();
     const totalNodes = (p.data.lineNodes || []).length;
@@ -3039,10 +3370,11 @@ class LinesView extends ItemView {
       '<div class="nws-sp"></div>' +
       '<button class="nws-fold" data-view="plots">🧩 情节</button>' +
       '<button class="nws-btn pri" data-act="newtrack">＋ 新建线</button></div>' +
-      '<div class="nws-psub">三类线可单独存在、可多条对照；点名称即重命名。每条线可绑定人物/设定/情节，视角决定节点称呼</div>' +
-      '<div class="nws-filters">' + axisBtns + '</div></div>' +
+      '<div class="nws-psub">⏳ 时间线为纵轴、🗺️ 空间线为横轴（时空矩阵）；两类线可相互独立，同时使用即建立映射。可加自定义线（如视角）。点名称即重命名</div>' +
+      '<div class="nws-filters">' + axisBtns + '</div>' + this.viewSwitchHtml() + '</div>' +
       '<div class="nws-lines">' + cols + '</div>');
     root.querySelector('[data-view="plots"]').addEventListener('click', () => p.activateView(VIEW_PLOTS));
+    this.bindViewSwitch(root);
     root.querySelectorAll('[data-axis]').forEach((b) => b.addEventListener('click', async () => { p.toggleAxis(b.dataset.axis); await p.saveNow(); this.render(); }));
     root.querySelector('[data-act="newtrack"]').addEventListener('click', () => new TrackModal(this.app, p, null).open());
     /* 轨工具（含点名称重命名、绑定） */
@@ -3051,7 +3383,7 @@ class LinesView extends ItemView {
       if (ta === 'edit') new TrackModal(this.app, p, t).open();
       else if (ta === 'rename') new InputModal(this.app, '重命名线', '如：张三的行动轨迹 / 京城地理线 / 主角情绪曲线', async (v) => { if (v.trim()) await p.updateTrack(tid, { name: v.trim() }); }, t.name).open();
       else if (ta === 'bind') new TrackBindModal(this.app, p, t).open();
-      else if (ta === 'del') { if (confirm('删除线「' + t.name + '」及其全部节点？')) p.deleteTrack(tid); }
+      else if (ta === 'del') { if (confirm(t('删除线「') + t.name + t('」及其全部节点？'))) p.deleteTrack(tid); }
       else if (ta === 'up') p.moveTrack(tid, -1);
       else if (ta === 'down') p.moveTrack(tid, 1);
     }));
@@ -3078,25 +3410,197 @@ class LinesView extends ItemView {
       }));
     });
   }
+
+  /* v2.17 时空矩阵：纵轴 = 时间线节点（行），横轴 = 空间线节点（列）；
+     两轴独立可单用，同时使用 = 交叉格上的事件即「时间↔空间映射」。 */
+  renderMatrix() {
+    const p = this.plugin;
+    const timeTracks = p.visibleTracks().filter((t) => t.axis === 'time');
+    const spaceTracks = p.visibleTracks().filter((t) => t.axis === 'space');
+    const rows = timeTracks.flatMap((t) => p.nodesOfLine(t.id).map((n) => ({ n, t })));
+    const cols = spaceTracks.flatMap((t) => p.nodesOfLine(t.id).map((n) => ({ n, t })));
+    if (!rows.length && !cols.length) {
+      const root0 = setViewRoot(this, '<div class="nws-phead"><div class="nws-row"><div class="nws-ptitle">⏳×🗺️ 时空矩阵</div></div></div>' + this.viewSwitchHtml() +
+        '<div class="nws-empty">时空矩阵需要时间线或空间线上已有节点。<br>请切到「分轴列表」，在 ⏳ 时间线 / 🗺️ 空间线 上添加节点后再来。</div>');
+      this.bindViewSwitch(root0); return;
+    }
+    const evs = p.data.stEvents || [];
+    const evInCell = (rn, cn) => evs.filter((e) => (rn ? e.timeNode === rn.id : !e.timeNode) && (cn ? e.spaceNode === cn.id : !e.spaceNode));
+    const chip = (e) => '<span class="nws-mev" data-eid="' + e.id + '" title="点击编辑">📌 ' + escapeHtml(e.label) + '</span>';
+    /* 表头 */
+    let html = '<table class="nws-matrix"><thead><tr><th class="nws-mx-corner">⏳ 时间 ↓ ／ 🗺️ 空间 →</th>' +
+      cols.map((c) => '<th><div class="nws-mx-col">' + escapeHtml(c.n.label) + (c.n.at ? '<i>' + escapeHtml(c.n.at) + '</i>' : '') + '</div></th>').join('') +
+      '<th class="nws-mx-none">（未定地点）</th></tr></thead><tbody>';
+    /* 行：每个时间节点一行；末行 = 未定时间 */
+    const rowHtml = (rn) => {
+      const head = rn ? '<div class="nws-mx-row">' + escapeHtml(rn.n.label) + (rn.n.at ? '<i>' + escapeHtml(rn.n.at) + '</i>' : '') + '</div>'
+        : '<div class="nws-mx-row" style="opacity:.55">（未定时间）</div>';
+      const cells = cols.map((cn) => {
+        const list = evInCell(rn ? rn.n.id : null, cn ? cn.n.id : null);
+        return '<td class="nws-mx-cell" data-tc="' + (rn ? rn.n.id : '') + '" data-sc="' + (cn ? cn.n.id : '') + '">' + list.map(chip).join('') + '</td>';
+      }).join('');
+      const lastCell = '<td class="nws-mx-cell" data-tc="' + (rn ? rn.n.id : '') + '" data-sc="">' + evInCell(rn ? rn.n.id : null, null).map(chip).join('') + '</td>';
+      return '<tr><th class="nws-mx-rowhead">' + head + '</th>' + cells + lastCell + '</tr>';
+    };
+    html += rows.map(rowHtml).join('');
+    html += rowHtml(null);
+    html += '</tbody></table>';
+    const root = setViewRoot(this,
+      '<div class="nws-phead"><div class="nws-row"><div class="nws-ptitle">⏳×🗺️ 时空矩阵 <span class="nws-tag">' + evs.length + ' 个映射事件</span></div>' +
+      '<div class="nws-sp"></div><button class="nws-fold" data-view="plots">🧩 情节</button>' +
+      '<button class="nws-btn pri" data-act="newev">＋ 新建时空事件</button></div>' +
+      '<div class="nws-psub">纵轴=时间线节点，横轴=空间线节点；点空格新建映射事件，点事件编辑。两轴也可只用其一（另一轴整列/整行留「未定」）</div>' +
+      this.viewSwitchHtml() + '</div>' +
+      '<div class="nws-mx-wrap">' + html + '</div>');
+    root.querySelector('[data-view="plots"]').addEventListener('click', () => p.activateView(VIEW_PLOTS));
+    this.bindViewSwitch(root);
+    root.querySelector('[data-act="newev"]').addEventListener('click', () => new StEventModal(this.app, p, null, null).open());
+    root.querySelectorAll('.nws-mx-cell').forEach((cell) => cell.addEventListener('click', (ev) => {
+      if (ev.target.closest('.nws-mev')) return;   // 点事件本体走编辑
+      new StEventModal(this.app, p, null, { timeNode: cell.dataset.tc || '', spaceNode: cell.dataset.sc || '' }).open();
+    }));
+    root.querySelectorAll('.nws-mev').forEach((tag) => tag.addEventListener('click', () => {
+      const e = p.stEventById(tag.dataset.eid); if (e) new StEventModal(this.app, p, e, null).open();
+    }));
+  }
+
+  /* v2.17 时空事件表：时间 / 地点 / 人物 / 事件 / 因果 / 结果 / 影响（+ 自定义维度列），可复制 Markdown */
+  renderTable() {
+    const p = this.plugin;
+    const dimTracks = p.visibleTracks().filter((t) => t.axis === 'custom');
+    const evs = (p.data.stEvents || []).slice().sort((a, b) => (a.created - b.created));
+    const headers = ['事件', '⏳ 时间', '🗺️ 地点', '👥 人物', '因果', '结果', '影响'].concat(dimTracks.map((t) => '🧵 ' + t.name));
+    const trs = evs.map((e) => {
+      const r = p.stEventRow(e, dimTracks);
+      const cells = [r.event, r.time, r.space, r.roles, r.causal, r.result, r.impact].concat(r.dims);
+      return '<tr data-seid="' + e.id + '">' + cells.map((c) => '<td>' + escapeHtml(String(c)) + '</td>').join('') +
+        '<td class="nws-mx-ops"><button class="nws-btn sm" data-se="edit">✎</button><button class="nws-btn sm" data-se="del">删</button></td></tr>';
+    }).join('');
+    const root = setViewRoot(this,
+      '<div class="nws-phead"><div class="nws-row"><div class="nws-ptitle">📋 时空事件表 <span class="nws-tag">' + evs.length + ' 个事件</span></div>' +
+      '<div class="nws-sp"></div>' +
+      '<button class="nws-btn" data-act="copymd">⧉ 复制 Markdown</button>' +
+      '<button class="nws-btn pri" data-act="newev">＋ 新建时空事件</button></div>' +
+      '<div class="nws-psub">由时间线×空间线（可叠加自定义线，如视角）整理而来；人物来自事件绑定；因果/结果/影响在事件弹窗中填写</div>' +
+      this.viewSwitchHtml() + '</div>' +
+      (evs.length ? '<div class="nws-mx-wrap"><table class="nws-matrix nws-evt"><thead><tr>' +
+        headers.map((h) => '<th>' + escapeHtml(h) + '</th>').join('') + '<th></th></tr></thead><tbody>' + trs + '</tbody></table></div>'
+        : '<div class="nws-empty">还没有时空事件。<br>去「时空矩阵」点交叉格新建，或点右上「＋ 新建时空事件」。</div>'));
+    this.bindViewSwitch(root);
+    root.querySelector('[data-act="newev"]').addEventListener('click', () => new StEventModal(this.app, p, null, null).open());
+    root.querySelector('[data-act="copymd"]').addEventListener('click', () => {
+      const md = '| ' + headers.join(' | ') + ' |\n| ' + headers.map(() => '---').join(' | ') + ' |\n' +
+        evs.map((e) => { const r = p.stEventRow(e, dimTracks); return '| ' + [r.event, r.time, r.space, r.roles, r.causal, r.result, r.impact].concat(r.dims).map((c) => String(c).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |'; }).join('\n');
+      try { navigator.clipboard.writeText(md); new Notice(t('已复制时空事件表 Markdown')); }
+      catch (e2) { new Notice(t('复制失败，请手动选择表格')); }
+    });
+    root.querySelectorAll('[data-seid]').forEach((tr) => tr.querySelectorAll('[data-se]').forEach((b) => b.addEventListener('click', () => {
+      const e = p.stEventById(tr.dataset.seid); if (!e) return;
+      if (b.dataset.se === 'edit') new StEventModal(this.app, p, e, null).open();
+      else if (confirm(t('删除该时空事件？'))) p.deleteStEvent(e.id);
+    })));
+  }
+}
+
+/* v2.17 新建/编辑时空事件（时间×空间映射 + 自定义维度 + 因果/结果/影响） */
+class StEventModal extends Modal {
+  constructor(app, plugin, ev, prefill) { super(app); this.p = plugin; this.ev = ev; this.pre = prefill || {}; }
+  onOpen() {
+    const p = this.p, e = this.ev, { contentEl } = this, isNew = !e;
+    contentEl.createEl('h3', { text: isNew ? '📌 新建时空事件' : '📌 编辑时空事件 · ' + e.label });
+    const name = contentEl.createEl('input'); name.type = 'text'; name.placeholder = t('事件名称'); name.style.width = '100%';
+    if (e) name.value = e.label;
+    const nodeOptions = (axis) => {
+      const opts = [];
+      p.tracksOfAxis(axis).forEach((t) => {
+        p.nodesOfLine(t.id).forEach((n) => opts.push({ v: n.id, l: t.name + ' ▸ ' + (n.at ? n.at + ' · ' : '') + n.label }));
+      });
+      return opts;
+    };
+    const mkSel = (label, opts, val) => {
+      contentEl.createEl('p', { text: label }).style.cssText = 'font-weight:600;margin:10px 0 4px';
+      const sel = contentEl.createEl('select'); sel.style.cssText = 'width:100%;font-size:12px';
+      sel.createEl('option', { value: '', text: '（未指定）' });
+      opts.forEach((o) => { const op = sel.createEl('option', { value: o.v, text: o.l }); if (o.v === val) op.selected = true; });
+      return sel;
+    };
+    const timeSel = mkSel('⏳ 时间节点（纵轴；时间+空间都填 = 二者存在映射）', nodeOptions('time'), e ? e.timeNode : this.pre.timeNode);
+    const spaceSel = mkSel('🗺️ 空间节点（横轴）', nodeOptions('space'), e ? e.spaceNode : this.pre.spaceNode);
+    /* 自定义维度（如视角线）：每条开启的自定义线一个下拉 */
+    const dimTracks = p.visibleTracks().filter((t) => t.axis === 'custom');
+    const dimSels = {};
+    dimTracks.forEach((t) => {
+      dimSels[t.id] = mkSel('🧵 ' + t.name, p.nodesOfLine(t.id).map((n) => ({ v: n.id, l: (n.at ? n.at + ' · ' : '') + n.label })), e && e.dims ? e.dims[t.id] : '');
+    });
+    contentEl.createEl('p', { text: t('事件内容') }).style.cssText = 'font-weight:600;margin:10px 0 4px';
+    const ta = contentEl.createEl('textarea'); ta.style.cssText = 'width:100%;height:52px'; ta.placeholder = t('发生了什么…');
+    if (e) ta.value = e.content || '';
+    /* 人物绑定 */
+    contentEl.createEl('p', { text: t('人物（可多选）') }).style.cssText = 'font-weight:600;margin:10px 0 4px';
+    let roles = e ? (e.bindings || []).slice() : [];
+    const roleBox = contentEl.createDiv('nws-selbox');
+    const renderRoles = () => {
+      roleBox.empty();
+      roles.forEach((r) => {
+        const chip = roleBox.createEl('span', { text: '👤 ' + (r.name || r.id) + ' ×' });
+        chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
+        chip.addEventListener('click', () => { roles = roles.filter((x) => x.id !== r.id); renderRoles(); });
+      });
+      const add = roleBox.createEl('button', { text: t('＋ 绑定人物') }); add.className = 'nws-btn sm';
+      add.addEventListener('click', () => new PlotBindPickModal(this.app, p, 'role', (pick) => {
+        if (!roles.some((x) => x.id === pick.id)) { roles.push(pick); renderRoles(); }
+      }).open());
+    };
+    renderRoles();
+    /* 因果 / 结果 / 影响 */
+    const mkTa = (label, ph, val) => {
+      contentEl.createEl('p', { text: label }).style.cssText = 'font-weight:600;margin:10px 0 4px';
+      const x = contentEl.createEl('textarea'); x.style.cssText = 'width:100%;height:38px'; x.placeholder = ph; x.value = val || '';
+      return x;
+    };
+    const causal = mkTa('因果（什么引发了它 / 接在什么之后）', t('如：因第 3 章的密信而起…'), e && e.causal);
+    const result = mkTa('结果（事件的直接后果）', t('如：两人决裂…'), e && e.result);
+    const impact = mkTa('影响（对后续剧情 / 人物的长远影响）', t('如：主角失去唯一线索…'), e && e.impact);
+    /* 保存 / 删除 */
+    const brow = contentEl.createDiv(); brow.style.cssText = 'margin-top:14px;display:flex;gap:8px;justify-content:flex-end';
+    const save = async () => {
+      const fields = {
+        label: name.value.trim() || '未命名事件', content: ta.value,
+        timeNode: timeSel.value, spaceNode: spaceSel.value,
+        dims: {},
+        bindings: roles, causal: causal.value, result: result.value, impact: impact.value
+      };
+      Object.keys(dimSels).forEach((k) => { if (dimSels[k].value) fields.dims[k] = dimSels[k].value; });
+      if (isNew) await p.addStEvent(fields); else await p.updateStEvent(e.id, fields);
+      this.close();
+    };
+    const saveBtn = brow.createEl('button', { text: t('保存') }); saveBtn.className = 'mod-cta'; saveBtn.addEventListener('click', save);
+    if (!isNew) {
+      const delBtn = brow.createEl('button', { text: t('删除') });
+      delBtn.addEventListener('click', async () => { if (confirm(t('删除该时空事件？'))) { await p.deleteStEvent(e.id); this.close(); } });
+    }
+  }
+  onClose() { this.contentEl.empty(); }
 }
 
 /* 新建/编辑一条线（轨）：名称 + 轴（时间/空间/情绪）+ 视角 + 整体绑定 */
 class TrackModal extends Modal {
   constructor(app, plugin, track) { super(app); this.p = plugin; this.t = track; this.binds = track ? (track.bindings || []).slice() : []; }
   onOpen() {
-    const { contentEl } = this, p = this.p, t = this.t, isNew = !t;
+    /* 注意：局部轨变量命名 tr，不得用 t——t 是全局翻译函数，遮蔽会导致新建/保存按钮无法渲染 */
+    const { contentEl } = this, p = this.p, tr = this.t, isNew = !tr;
     contentEl.createEl('h3', { text: (isNew ? '新建' : '编辑') + '线（时间 / 空间 / 情绪）' });
-    const name = contentEl.createEl('input'); name.type = 'text'; name.placeholder = '线名称（可重命名，如：张三的行动轨迹 / 京城地理线 / 主角情绪曲线）'; name.style.width = '100%';
-    if (t) name.value = t.name;
+    const name = contentEl.createEl('input'); name.type = 'text'; name.placeholder = t('线名称（可重命名，如：张三的行动轨迹 / 京城地理线 / 主角情绪曲线）'); name.style.width = '100%';
+    if (tr) name.value = tr.name;
 
-    contentEl.createEl('p', { text: '① 线的类型（可只建一种，也可多条对照）' }).style.cssText = 'font-weight:600;margin:12px 0 5px';
-    let axis = t ? t.axis : 'time';
+    contentEl.createEl('p', { text: t('① 线的类型（可只建一种，也可多条对照）') }).style.cssText = 'font-weight:600;margin:12px 0 5px';
+    let axis = tr ? tr.axis : 'time';
     const axisBtns = contentEl.createDiv(); axisBtns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
     const axisBtnsArr = [];
     const namePresets = contentEl.createDiv(); namePresets.style.cssText = 'margin-top:6px;display:flex;gap:5px;flex-wrap:wrap';
     const renderPresets = () => {
       namePresets.empty();
-      namePresets.createSpan({ text: '快捷命名：' }).style.cssText = 'font-size:10px;color:var(--text-muted)';
+      namePresets.createSpan({ text: t('快捷命名：') }).style.cssText = 'font-size:10px;color:var(--text-muted)';
       (TRACK_NAME_PRESETS[axis] || []).forEach((s) => {
         const b = namePresets.createEl('button', { text: s }); b.className = 'nws-btn sm';
         b.addEventListener('click', () => { name.value = s; });
@@ -3114,7 +3618,7 @@ class TrackModal extends Modal {
       });
     });
 
-    contentEl.createEl('p', { text: '② 视角（决定节点称呼与内容提示）' }).style.cssText = 'font-weight:600;margin:12px 0 5px';
+    contentEl.createEl('p', { text: t('② 视角（决定节点称呼与内容提示）') }).style.cssText = 'font-weight:600;margin:12px 0 5px';
     let view = t ? t.view : 'event';
     const viewBtns = contentEl.createDiv(); viewBtns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
     const viewBtnsArr = [];
@@ -3128,7 +3632,7 @@ class TrackModal extends Modal {
     renderPresets();
 
     /* ③ 整体绑定：整条线围绕谁/什么 */
-    contentEl.createEl('p', { text: '③ 绑定对象（整条线围绕谁/什么，可选）' }).style.cssText = 'font-weight:600;margin:12px 0 5px';
+    contentEl.createEl('p', { text: t('③ 绑定对象（整条线围绕谁/什么，可选）') }).style.cssText = 'font-weight:600;margin:12px 0 5px';
     const bindBox = contentEl.createDiv('nws-selbox');
     const renderBinds = () => {
       bindBox.empty();
@@ -3137,7 +3641,7 @@ class TrackModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { this.binds = this.binds.filter((x) => !(x.id === b.id && x.kind === b.kind)); renderBinds(); });
       });
-      const add = bindBox.createEl('button', { text: '＋ 绑定人物/情节/设定' }); add.className = 'nws-btn sm';
+      const add = bindBox.createEl('button', { text: t('＋ 绑定人物/情节/设定') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new LineBindModal(this.app, p, (pick) => {
         if (!this.binds.some((x) => x.id === pick.id && x.kind === pick.kind)) { this.binds.push(pick); renderBinds(); }
       }).open());
@@ -3148,7 +3652,7 @@ class TrackModal extends Modal {
     const ok = row.createEl('button', { text: isNew ? '创建线' : '保存' }); ok.className = 'mod-cta';
     ok.addEventListener('click', async () => {
       const fields = { name: name.value.trim() || trackAxisDef(axis).name, axis, view, bindings: this.binds };
-      if (isNew) await p.addTrack(fields); else await p.updateTrack(t.id, fields);
+      if (isNew) await p.addTrack(fields); else await p.updateTrack(tr.id, fields);
       this.close();
     });
     setTimeout(() => name.focus(), 30);
@@ -3161,8 +3665,8 @@ class TrackBindModal extends Modal {
   constructor(app, plugin, track) { super(app); this.p = plugin; this.t = track; this.binds = (track.bindings || []).slice(); }
   onOpen() {
     const p = this.p, { contentEl } = this;
-    contentEl.createEl('h3', { text: '绑定对象 · ' + this.t.name });
-    contentEl.createEl('div', { text: '整条线围绕这些对象展开（如把时间线绑定到某个人物＝此人的行动轨迹）。节点仍可各自再绑定。' }).style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.6';
+    contentEl.createEl('h3', { text: t('绑定对象 · ') + this.t.name });
+    contentEl.createEl('div', { text: t('整条线围绕这些对象展开（如把时间线绑定到某个人物＝此人的行动轨迹）。节点仍可各自再绑定。') }).style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.6';
     const bindBox = contentEl.createDiv('nws-selbox');
     const render = () => {
       bindBox.empty();
@@ -3171,14 +3675,14 @@ class TrackBindModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { this.binds = this.binds.filter((x) => !(x.id === b.id && x.kind === b.kind)); render(); });
       });
-      const add = bindBox.createEl('button', { text: '＋ 绑定' }); add.className = 'nws-btn sm';
+      const add = bindBox.createEl('button', { text: t('＋ 绑定') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new LineBindModal(this.app, p, (pick) => {
         if (!this.binds.some((x) => x.id === pick.id && x.kind === pick.kind)) { this.binds.push(pick); render(); }
       }).open());
     };
     render();
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:14px;text-align:right';
-    const ok = row.createEl('button', { text: '保存绑定' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('保存绑定') }); ok.className = 'mod-cta';
     ok.addEventListener('click', async () => { await p.updateTrack(this.t.id, { bindings: this.binds }); this.close(); });
   }
   onClose() { this.contentEl.empty(); }
@@ -3196,7 +3700,7 @@ class InputModal extends Modal {
     else if (this.ph) inp.value = this.ph;
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { this.onSubmit(inp.value); this.close(); } });
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:12px;text-align:right';
-    const ok = row.createEl('button', { text: '确定' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('确定') }); ok.className = 'mod-cta';
     ok.addEventListener('click', () => { this.onSubmit(inp.value); this.close(); });
     setTimeout(() => { inp.focus(); inp.select(); }, 30);
   }
@@ -3207,15 +3711,15 @@ class ColorModal extends Modal {
   constructor(app, entity, onPick) { super(app); this.e = entity; this.onPick = onPick; }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl('h3', { text: '为「' + (this.e ? this.e.name : '') + '」选高亮色' });
-    contentEl.createEl('div', { text: '选颜色＝正文彩色加粗；选「无颜色」＝正文加粗+下划线。' }).style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px';
+    contentEl.createEl('h3', { text: t('为「') + (this.e ? this.e.name : '') + '」选高亮色' });
+    contentEl.createEl('div', { text: t('选颜色＝正文彩色加粗；选「无颜色」＝正文加粗+下划线。') }).style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px';
     PALETTE.forEach((c, i) => {
       const b = contentEl.createEl('button');
       b.style.cssText = 'width:30px;height:30px;border-radius:50%;border:2px solid ' + c + ';background:' + c + ';margin:6px;';
-      b.title = PALETTE_NAMES[i];
+      b.title = t(PALETTE_NAMES[i]);
       b.addEventListener('click', () => { this.onPick(i); this.close(); });
     });
-    const none = contentEl.createEl('button', { text: '无颜色（加粗+下划线）' });
+    const none = contentEl.createEl('button', { text: t('无颜色（加粗+下划线）') });
     none.className = 'nws-btn'; none.style.cssText = 'display:block;margin-top:8px';
     none.addEventListener('click', () => { this.onPick(-1); this.close(); });
   }
@@ -3226,7 +3730,7 @@ class TypePickModal extends Modal {
   constructor(app, types, isOutline, onPick) { super(app); this.types = types; this.isOutline = isOutline; this.onPick = onPick; }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl('h3', { text: '选择类型' });
+    contentEl.createEl('h3', { text: t('选择类型') });
     this.types.forEach((t) => {
       const b = contentEl.createEl('button', { text: typeEmoji(t, this.isOutline) + ' ' + t });
       b.style.cssText = 'margin:4px 6px 4px 0;padding:6px 12px;';
@@ -3240,22 +3744,22 @@ class OutlineCreateModal extends Modal {
   constructor(app, plugin, presetType) { super(app); this.p = plugin; this.preset = presetType; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: '新建大纲 · 第一步选类型' });
-    const desc = contentEl.createEl('div', { text: '① 先选大纲类型（每类有专属模板）→ ② 填标题 → ③ 创建。创建即在 大纲/ 生成同名 md 笔记，笔记内已含模板内容，按项补充即可，并可绑定对象。' });
+    contentEl.createEl('h3', { text: t('新建大纲 · 第一步选类型') });
+    const desc = contentEl.createEl('div', { text: t('① 先选大纲类型（每类有专属模板）→ ② 填标题 → ③ 创建。创建即在 大纲/ 生成同名 md 笔记，笔记内已含模板内容，按项补充即可，并可绑定对象。') });
     desc.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:10px';
 
     /* ① 先选类型 */
-    contentEl.createEl('p', { text: '① 选择大纲类型' }).style.cssText = 'font-weight:600;margin:0 0 5px';
+    contentEl.createEl('p', { text: t('① 选择大纲类型') }).style.cssText = 'font-weight:600;margin:0 0 5px';
     const typeBtns = contentEl.createDiv(); typeBtns.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap';
     let chosen = (this.preset && p.data.outlineTypes.indexOf(this.preset) >= 0) ? this.preset : null;
     let activeBtn = null;
     const hint = contentEl.createDiv('nws-otpl-hint');
     hint.style.cssText = 'font-size:10px;color:var(--text-muted);margin:8px 0;line-height:1.7;padding:8px;border-radius:6px;background:var(--background-secondary)';
-    hint.textContent = '选中类型后显示该类型模板字段。';
+    hint.textContent = t('选中类型后显示该类型模板字段。');
     const syncHint = () => {
-      if (!chosen) { hint.textContent = '请先选择一个大纲类型。'; return; }
-      hint.innerHTML = '<b>' + outlineEmoji(chosen) + ' ' + escapeHtml(chosen) + ' 模板</b><br>' +
-        outlineTemplateFields(chosen).map((f) => '· ' + escapeHtml(f)).join('<br>');
+      if (!chosen) { hint.textContent = t('请先选择一个大纲类型。'); return; }
+      hint.innerHTML = '<b>' + outlineEmoji(chosen) + ' ' + escapeHtml(t(chosen)) + ' ' + t('模板') + '</b><br>' +
+        outlineTemplateFields(chosen).map((f) => '· ' + escapeHtml(t(f))).join('<br>');
     };
     p.data.outlineTypes.forEach((t) => {
       const b = typeBtns.createEl('button', { text: outlineEmoji(t) + ' ' + t });
@@ -3271,18 +3775,18 @@ class OutlineCreateModal extends Modal {
 
     /* ② 标题（选类型后才显示，强调顺序） */
     const inpWrap = contentEl.createDiv(); inpWrap.style.cssText = chosen ? '' : 'display:none';
-    inpWrap.createEl('p', { text: '② 大纲标题（将作为文件名）' }).style.cssText = 'font-weight:600;margin:10px 0 5px';
-    const inp = inpWrap.createEl('input'); inp.type = 'text'; inp.placeholder = '例如：第一章 雨夜来客'; inp.style.width = '100%';
+    inpWrap.createEl('p', { text: t('② 大纲标题（将作为文件名）') }).style.cssText = 'font-weight:600;margin:10px 0 5px';
+    const inp = inpWrap.createEl('input'); inp.type = 'text'; inp.placeholder = t('例如：第一章 雨夜来客'); inp.style.width = '100%';
     syncHint();
 
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:12px;text-align:right';
-    const ok = row.createEl('button', { text: '③ 创建并生成模板笔记' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('③ 创建并生成模板笔记') }); ok.className = 'mod-cta';
     const submit = async () => {
-      if (!chosen) { new Notice('请先选择大纲类型'); return; }
-      if (!inp.value.trim()) { new Notice('请填写大纲标题'); return; }
+      if (!chosen) { new Notice(t('请先选择大纲类型')); return; }
+      if (!inp.value.trim()) { new Notice(t('请填写大纲标题')); return; }
       const o = await p.addOutline(inp.value.trim(), chosen);
       this.close();
-      if (o) { new Notice('已创建大纲：' + o.title + '（' + chosen + ' 模板）'); p.openOutlineFile(o.id); }
+      if (o) { new Notice(t('已创建大纲：') + o.title + '（' + chosen + t(' 模板）')); p.openOutlineFile(o.id); }
     };
     ok.addEventListener('click', submit);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -3296,12 +3800,12 @@ class OutlineEditModal extends Modal {
   onOpen() {
     const { contentEl } = this, p = this.p, o = this.o;
     if (!o) { this.close(); return; }
-    contentEl.createEl('h3', { text: '编辑大纲 · ' + o.title });
+    contentEl.createEl('h3', { text: t('编辑大纲 · ') + o.title });
     const title = contentEl.createEl('input'); title.type = 'text'; title.value = o.title; title.style.width = '100%';
 
     const typeRow = contentEl.createDiv(); typeRow.style.cssText = 'margin-top:10px';
-    const typeSpan = typeRow.createSpan({ text: '类型：' + outlineEmoji(o.type) + ' ' + o.type });
-    const typeBtn = typeRow.createEl('button', { text: '更改类型' }); typeBtn.className = 'nws-btn sm'; typeBtn.style.marginLeft = '8px';
+    const typeSpan = typeRow.createSpan({ text: t('类型：') + outlineEmoji(o.type) + ' ' + o.type });
+    const typeBtn = typeRow.createEl('button', { text: t('更改类型') }); typeBtn.className = 'nws-btn sm'; typeBtn.style.marginLeft = '8px';
     let chosen = o.type;
     const tplHint = contentEl.createDiv('nws-otpl-hint'); tplHint.style.cssText = 'font-size:10px;color:var(--text-muted);margin-top:6px;line-height:1.6';
     tplHint.textContent = '模板字段：' + outlineTemplateFields(chosen).join(' · ');
@@ -3310,10 +3814,10 @@ class OutlineEditModal extends Modal {
     }).open());
 
     /* 标签 */
-    contentEl.createEl('p', { text: '标签（逗号分隔）' }).style.cssText = 'font-weight:600;margin-top:10px;margin-bottom:5px';
+    contentEl.createEl('p', { text: t('标签（逗号分隔）') }).style.cssText = 'font-weight:600;margin-top:10px;margin-bottom:5px';
     const tags = contentEl.createEl('input'); tags.type = 'text'; tags.value = (o.tags || []).join('、'); tags.style.width = '100%';
     /* 颜色 */
-    contentEl.createEl('p', { text: '颜色' }).style.cssText = 'font-weight:600;margin-top:10px;margin-bottom:5px';
+    contentEl.createEl('p', { text: t('颜色') }).style.cssText = 'font-weight:600;margin-top:10px;margin-bottom:5px';
     let color = o.color == null ? 3 : o.color;
     const colorRow = contentEl.createDiv(); colorRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
     let cbtn = [];
@@ -3324,17 +3828,17 @@ class OutlineEditModal extends Modal {
       cbtn.push(b);
     });
 
-    contentEl.createEl('p', { text: '描述 / 要点' }).style.cssText = 'font-weight:600;margin-top:10px;margin-bottom:5px';
+    contentEl.createEl('p', { text: t('描述 / 要点') }).style.cssText = 'font-weight:600;margin-top:10px;margin-bottom:5px';
     const desc = contentEl.createEl('textarea'); desc.value = o.desc || ''; desc.style.cssText = 'width:100%;height:80px';
 
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:12px;text-align:right';
-    const openFile = row.createEl('button', { text: '📄 打开文件' }); openFile.className = 'nws-btn'; openFile.style.marginRight = '8px';
+    const openFile = row.createEl('button', { text: t('📄 打开文件') }); openFile.className = 'nws-btn'; openFile.style.marginRight = '8px';
     openFile.addEventListener('click', () => { this.close(); p.openOutlineFile(o.id); });
-    const ok = row.createEl('button', { text: '保存' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('保存') }); ok.className = 'mod-cta';
     ok.addEventListener('click', async () => {
       const tg = tags.value.split(/[、,，]/).map((x) => x.trim()).filter(Boolean);
       await p.updateOutline(o.id, { title: title.value.trim() || o.title, type: chosen, tags: tg, color, desc: desc.value });
-      new Notice('大纲已保存并同步到文件'); this.close();
+      new Notice(t('大纲已保存并同步到文件')); this.close();
     });
   }
   onClose() { this.contentEl.empty(); }
@@ -3347,21 +3851,21 @@ class PlotModal extends Modal {
     const p = this.p, pl = this.plot, { contentEl } = this;
     const isNew = !pl;
     contentEl.createEl('h3', { text: isNew ? '新建情节' : '编辑情节 · ' + pl.name });
-    const name = contentEl.createEl('input'); name.type = 'text'; name.placeholder = '情节名称'; name.style.width = '100%';
+    const name = contentEl.createEl('input'); name.type = 'text'; name.placeholder = t('情节名称'); name.style.width = '100%';
     if (pl) name.value = pl.name;
 
-    contentEl.createEl('p', { text: '① 情节过程（开端 / 发展 / 高潮 / 结局）' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    contentEl.createEl('p', { text: t('① 情节过程（开端 / 发展 / 高潮 / 结局）') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
     const stageInputs = {};
     PLOT_STAGES.forEach((s) => {
       const row = contentEl.createDiv(); row.style.cssText = 'margin-bottom:6px';
       row.createSpan({ text: s.emoji + ' ' + s.label + '：' }).style.cssText = 'display:inline-block;width:64px;font-size:11px';
       const ta = row.createEl('textarea'); ta.style.cssText = 'width:calc(100% - 70px);height:38px;vertical-align:top';
-      ta.placeholder = s.label + '要点…';
+      ta.placeholder = s.label + t('要点…');
       if (pl && pl.stages) ta.value = pl.stages[s.key] || '';
       stageInputs[s.key] = ta;
     });
 
-    contentEl.createEl('p', { text: '② 绑定角色' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    contentEl.createEl('p', { text: t('② 绑定角色') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
     let selRoles = pl ? (pl.roles || []).slice() : [];
     const roleBox = contentEl.createDiv('nws-selbox');
     const renderRoles = () => {
@@ -3371,14 +3875,14 @@ class PlotModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { selRoles = selRoles.filter((x) => x.id !== r.id); renderRoles(); });
       });
-      const add = roleBox.createEl('button', { text: '＋ 绑定角色' }); add.className = 'nws-btn sm';
+      const add = roleBox.createEl('button', { text: t('＋ 绑定角色') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new PlotBindPickModal(this.app, p, 'role', (pick) => {
         if (!selRoles.some((x) => x.id === pick.id)) { selRoles.push(pick); renderRoles(); }
       }).open());
     };
     renderRoles();
 
-    contentEl.createEl('p', { text: '③ 章节 / 章节范围' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    contentEl.createEl('p', { text: t('③ 章节 / 章节范围') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
     let selChs = pl ? (pl.chapters || []).slice() : [];
     const chBox = contentEl.createDiv('nws-selbox');
     const renderChs = () => {
@@ -3388,30 +3892,84 @@ class PlotModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { selChs = selChs.filter((x) => x.id !== c.id); renderChs(); });
       });
-      const add = chBox.createEl('button', { text: '＋ 绑定章节' }); add.className = 'nws-btn sm';
+      const add = chBox.createEl('button', { text: t('＋ 绑定章节') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new PlotBindPickModal(this.app, p, 'chapter', (pick) => {
         if (!selChs.some((x) => x.id === pick.id)) { selChs.push(pick); renderChs(); }
       }).open());
     };
     renderChs();
 
-    contentEl.createEl('p', { text: '④ 标签 / 颜色 / 备注' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
-    const tags = contentEl.createEl('input'); tags.type = 'text'; tags.placeholder = '标签，用逗号分隔'; tags.style.width = '100%';
+    contentEl.createEl('p', { text: t('④ 标签 / 颜色 / 备注') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    const tags = contentEl.createEl('input'); tags.type = 'text'; tags.placeholder = t('标签，用逗号分隔'); tags.style.width = '100%';
     if (pl) tags.value = (pl.tags || []).join(', ');
     let chosenColor = pl ? pl.color : 3;
     const colorRow = contentEl.createDiv(); colorRow.style.cssText = 'margin-top:8px';
-    colorRow.createSpan({ text: '颜色：' }).style.cssText = 'font-size:11px';
+    colorRow.createSpan({ text: t('颜色：') }).style.cssText = 'font-size:11px';
     const colorBtns = [];
     PALETTE.forEach((c, i) => {
       const b = colorRow.createEl('button');
       b.style.cssText = 'width:22px;height:22px;border-radius:50%;border:2px solid ' + (i === chosenColor ? 'var(--text-normal)' : 'transparent') + ';background:' + c + ';margin-right:5px;cursor:pointer';
-      b.title = PALETTE_NAMES[i];
+      b.title = t(PALETTE_NAMES[i]);
       b.addEventListener('click', () => { chosenColor = i; colorBtns.forEach((x, j) => x.style.borderColor = j === i ? 'var(--text-normal)' : 'transparent'); });
       colorBtns.push(b);
     });
-    contentEl.createEl('p', { text: '备注' }).style.cssText = 'margin-top:8px';
-    const note = contentEl.createEl('textarea'); note.style.cssText = 'width:100%;height:52px'; note.placeholder = '补充备注…';
+    contentEl.createEl('p', { text: t('备注') }).style.cssText = 'margin-top:8px';
+    const note = contentEl.createEl('textarea'); note.style.cssText = 'width:100%;height:52px'; note.placeholder = t('补充备注…');
     if (pl) note.value = pl.note || '';
+
+    /* ===== v2.17 ⑤ 情节控制（线类型 · 所属主线 · 冲突链 · 转折点 · 节拍表 · 伏笔节奏） ===== */
+    contentEl.createEl('p', { text: t('⑤ 情节控制（主线/支线 · 冲突链 · 转折点 · 节拍 · 伏笔节奏）') }).style.cssText = 'font-weight:600;margin-top:14px;margin-bottom:6px';
+    const ltRow = contentEl.createDiv(); ltRow.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
+    ltRow.createSpan({ text: t('线类型：') }).style.cssText = 'font-size:11px';
+    let lineType = pl ? (pl.lineType || '主线') : '主线';
+    const ltBtns = [];
+    ['主线', '支线', '暗线'].forEach((lt) => {
+      const b = ltRow.createEl('button', { text: lt }); b.className = 'nws-fbtn' + (lt === lineType ? ' on' : '');
+      b.addEventListener('click', () => { lineType = lt; ltBtns.forEach((x) => x.removeClass('on')); b.addClass('on'); });
+      ltBtns.push(b);
+    });
+    const parentSel = contentEl.createEl('select'); parentSel.style.cssText = 'font-size:12px;padding:3px 6px;min-width:140px';
+    parentSel.createEl('option', { value: '', text: t('所属主线：无') });
+    (p.data.plots || []).forEach((other) => {
+      if (pl && other.id === pl.id) return;
+      if ((other.lineType || '主线') !== '主线') return;
+      const op = parentSel.createEl('option', { value: other.id, text: t('所属主线：') + other.name });
+      if (pl && pl.parentId === other.id) op.selected = true;
+    });
+    const mkTa2 = (label, ph, val, h) => {
+      contentEl.createEl('p', { text: label }).style.cssText = 'font-weight:600;margin:8px 0 4px';
+      const x = contentEl.createEl('textarea'); x.style.cssText = 'width:100%;height:' + (h || 38) + 'px'; x.placeholder = ph; x.value = val || '';
+      return x;
+    };
+    const chain = mkTa2(t('冲突链（一行一步，按升级顺序）'), t('如：误会 → 对峙 → 决裂 → 反击'), pl && pl.conflictChain);
+    const turns = mkTa2(t('转折点（一行一个，可标注章节）'), t('如：第 5 章 · 发现真实身份'), pl && pl.turningPoints);
+    const fPlant = mkTa2(t('伏笔埋下（本情节埋设的伏笔）'), t('埋了什么、埋在哪一章'), pl && pl.foreshadowPlant);
+    const fPayoff = mkTa2(t('伏笔回收节奏（何时揭示 / 分几次揭示）'), t('如：第 12 章首揭、第 20 章全部揭晓'), pl && pl.foreshadowPayoff);
+    /* 节拍表 */
+    contentEl.createEl('p', { text: t('节拍表（Beat：情节内部的节奏单元，按顺序排列）') }).style.cssText = 'font-weight:600;margin:10px 0 4px';
+    let beats = pl && Array.isArray(pl.beats) ? pl.beats.map((b) => ({ name: b.name || '', desc: b.desc || '' })) : [];
+    const beatBox = contentEl.createDiv();
+    const renderBeats = () => {
+      beatBox.empty();
+      beats.forEach((b, i) => {
+        const r = beatBox.createDiv(); r.style.cssText = 'display:flex;gap:5px;align-items:center;margin-bottom:4px';
+        r.createSpan({ text: (i + 1) + '.' }).style.cssText = 'font-size:11px;color:var(--text-muted);width:20px;text-align:right';
+        const n1 = r.createEl('input'); n1.type = 'text'; n1.placeholder = t('节拍名（如：误入禁地）'); n1.value = b.name; n1.style.cssText = 'width:34%;font-size:12px;padding:3px 6px';
+        const n2 = r.createEl('input'); n2.type = 'text'; n2.placeholder = t('要点'); n2.value = b.desc; n2.style.cssText = 'flex:1;min-width:0;font-size:12px;padding:3px 6px';
+        n1.addEventListener('input', () => { b.name = n1.value; });
+        n2.addEventListener('input', () => { b.desc = n2.value; });
+        const up = r.createEl('button', { text: '↑' }); up.className = 'nws-btn sm'; up.title = t('上移');
+        up.addEventListener('click', () => { if (i > 0) { const tmp = beats[i - 1]; beats[i - 1] = beats[i]; beats[i] = tmp; renderBeats(); } });
+        const dn = r.createEl('button', { text: '↓' }); dn.className = 'nws-btn sm'; dn.title = t('下移');
+        dn.addEventListener('click', () => { if (i < beats.length - 1) { const tmp = beats[i + 1]; beats[i + 1] = beats[i]; beats[i] = tmp; renderBeats(); } });
+        const del = r.createEl('button', { text: '×' }); del.className = 'nws-btn sm'; del.title = t('删除');
+        del.addEventListener('click', () => { beats.splice(i, 1); renderBeats(); });
+      });
+      if (!beats.length) beatBox.createEl('div', { text: t('（还没有节拍；节拍 = 一个情节内部的节奏步骤，如「发现线索 → 误判 → 踩坑」）') }).style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:4px';
+      const add = beatBox.createEl('button', { text: t('＋ 添加节拍') }); add.className = 'nws-btn sm'; add.style.marginTop = '4px';
+      add.addEventListener('click', () => { beats.push({ name: '', desc: '' }); renderBeats(); });
+    };
+    renderBeats();
 
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:14px;text-align:right';
     const ok = row.createEl('button', { text: isNew ? '创建' : '保存' }); ok.className = 'mod-cta';
@@ -3420,11 +3978,16 @@ class PlotModal extends Modal {
         name: name.value.trim() || '未命名情节',
         stages: {}, roles: selRoles, chapters: selChs,
         tags: tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
-        color: chosenColor, note: note.value
+        color: chosenColor, note: note.value,
+        /* v2.17 情节控制 */
+        lineType, parentId: parentSel.value,
+        conflictChain: chain.value, turningPoints: turns.value,
+        foreshadowPlant: fPlant.value, foreshadowPayoff: fPayoff.value,
+        beats: beats.map((b) => ({ name: b.name.trim(), desc: b.desc.trim() })).filter((b) => b.name || b.desc)
       };
       PLOT_STAGES.forEach((s) => { fields.stages[s.key] = stageInputs[s.key].value; });
-      if (isNew) { await p.addPlot(fields); new Notice('情节已创建'); }
-      else { await p.updatePlot(pl.id, fields); new Notice('情节已保存'); }
+      if (isNew) { await p.addPlot(fields); new Notice(t('情节已创建')); }
+      else { await p.updatePlot(pl.id, fields); new Notice(t('情节已保存')); }
       this.close();
     });
     setTimeout(() => name.focus(), 30);
@@ -3438,7 +4001,7 @@ class PlotBindPickModal extends Modal {
   onOpen() {
     const { contentEl } = this, p = this.p, kind = this.kind;
     contentEl.createEl('h3', { text: kind === 'role' ? '选择角色' : '选择章节' });
-    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = '搜索…'; inp.style.width = '100%';
+    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('搜索…'); inp.style.width = '100%';
     const list = contentEl.createDiv(); list.style.cssText = 'max-height:320px;overflow:auto;margin-top:8px';
     const render = () => {
       list.empty();
@@ -3470,11 +4033,11 @@ class LineNodeModal extends Modal {
     const track = p.trackById(this.line);
     const vd = trackViewDef((n && n.view) || (track && track.view) || 'event');
     contentEl.createEl('h3', { text: (isNew ? '添加' : '编辑') + vd.node + (track ? '（' + track.name + '）' : '') });
-    const label = contentEl.createEl('input'); label.type = 'text'; label.placeholder = vd.node + '名称'; label.style.width = '100%';
+    const label = contentEl.createEl('input'); label.type = 'text'; label.placeholder = vd.node + t('名称'); label.style.width = '100%';
     if (n) label.value = n.label;
     const atEx = track && track.axis === 'emotion' ? '事件发展 / 城东渡口 / 第2章 / 暴雨夜（外部条件）'
       : track && track.axis === 'space' ? '城东渡口' : '第 2 章 / 公元 1024 年';
-    const at = contentEl.createEl('input'); at.type = 'text'; at.placeholder = vd.at + '（如：' + atEx + '）'; at.style.width = '100%'; at.style.marginTop = '6px';
+    const at = contentEl.createEl('input'); at.type = 'text'; at.placeholder = vd.at + t('（如：') + atEx + t('）'); at.style.width = '100%'; at.style.marginTop = '6px';
     if (n) at.value = n.at || '';
 
     contentEl.createEl('p', { text: (track && track.axis === 'emotion' ? '触发源（事件 / 地点 / 时间段 / 外部条件 / 人物）' : '绑定对象（人物 / 情节 / 线索 / 伏笔 等）') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
@@ -3487,16 +4050,16 @@ class LineNodeModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { this.binds = this.binds.filter((x) => !(x.id === b.id && x.kind === b.kind)); renderBinds(); });
       });
-      const add = bindBox.createEl('button', { text: '＋ 绑定' }); add.className = 'nws-btn sm';
+      const add = bindBox.createEl('button', { text: t('＋ 绑定') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new LineBindModal(this.app, p, (pick) => {
         if (!this.binds.some((x) => x.id === pick.id && x.kind === pick.kind)) { this.binds.push(pick); renderBinds(); }
       }).open());
     };
     renderBinds();
 
-    contentEl.createEl('p', { text: '内容（根据绑定对象撰写；留空则显示绑定提示）' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    contentEl.createEl('p', { text: t('内容（根据绑定对象撰写；留空则显示绑定提示）') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
     const contentTa = contentEl.createEl('textarea'); contentTa.style.cssText = 'width:100%;height:90px';
-    contentTa.placeholder = '此处撰写该' + vd.node + '发生的事…';
+    contentTa.placeholder = t('此处撰写该') + vd.node + t('发生的事…');
     if (n) contentTa.value = n.content || '';
 
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:14px;text-align:right';
@@ -3517,8 +4080,8 @@ class LineBindModal extends Modal {
   constructor(app, plugin, onPick) { super(app); this.p = plugin; this.onPick = onPick; this.q = ''; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: '绑定对象' });
-    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = '搜索…'; inp.style.width = '100%';
+    contentEl.createEl('h3', { text: t('绑定对象') });
+    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('搜索…'); inp.style.width = '100%';
     const list = contentEl.createDiv(); list.style.cssText = 'max-height:340px;overflow:auto;margin-top:8px';
     const render = () => {
       list.empty();
@@ -3554,23 +4117,23 @@ class FindReplaceModal extends Modal {
   constructor(app, plugin) { super(app); this.p = plugin; this.caseSensitive = false; this.matches = []; this.idx = -1; }
   onOpen() {
     const { contentEl } = this, self = this;
-    contentEl.createEl('h3', { text: '查找替换 · 当前文档' });
+    contentEl.createEl('h3', { text: t('查找替换 · 当前文档') });
     const view = this.app.workspace.getActiveViewOfType(obsidian.MarkdownView);
     this.editor = view && view.editor ? view.editor : null;
-    if (!this.editor) { contentEl.createEl('p', { text: '请先打开一篇 Markdown 文档。' }).style.color = 'var(--text-muted)'; return; }
+    if (!this.editor) { contentEl.createEl('p', { text: t('请先打开一篇 Markdown 文档。') }).style.color = 'var(--text-muted)'; return; }
 
     const findRow = contentEl.createDiv(); findRow.style.cssText = 'display:flex;gap:6px;margin-bottom:8px';
-    const find = findRow.createEl('input'); find.type = 'text'; find.placeholder = '查找…'; find.style.cssText = 'flex:1';
-    const findNext = findRow.createEl('button', { text: '下一个' }); findNext.className = 'nws-btn';
-    const prevBtn = findRow.createEl('button', { text: '上一个' }); prevBtn.className = 'nws-btn';
+    const find = findRow.createEl('input'); find.type = 'text'; find.placeholder = t('查找…'); find.style.cssText = 'flex:1';
+    const findNext = findRow.createEl('button', { text: t('下一个') }); findNext.className = 'nws-btn';
+    const prevBtn = findRow.createEl('button', { text: t('上一个') }); prevBtn.className = 'nws-btn';
 
     const replRow = contentEl.createDiv(); replRow.style.cssText = 'display:flex;gap:6px;margin-bottom:8px';
-    const repl = replRow.createEl('input'); repl.type = 'text'; repl.placeholder = '替换为…'; repl.style.cssText = 'flex:1';
-    const replOne = replRow.createEl('button', { text: '替换' }); replOne.className = 'nws-btn';
-    const replAll = replRow.createEl('button', { text: '全部替换' }); replAll.className = 'nws-btn pri';
+    const repl = replRow.createEl('input'); repl.type = 'text'; repl.placeholder = t('替换为…'); repl.style.cssText = 'flex:1';
+    const replOne = replRow.createEl('button', { text: t('替换') }); replOne.className = 'nws-btn';
+    const replAll = replRow.createEl('button', { text: t('全部替换') }); replAll.className = 'nws-btn pri';
 
     const optRow = contentEl.createDiv(); optRow.style.cssText = 'margin-bottom:6px';
-    const caseBtn = optRow.createEl('button', { text: 'Aa 区分大小写：关' }); caseBtn.className = 'nws-btn sm';
+    const caseBtn = optRow.createEl('button', { text: t('Aa 区分大小写：关') }); caseBtn.className = 'nws-btn sm';
     caseBtn.addEventListener('click', () => { self.caseSensitive = !self.caseSensitive; caseBtn.textContent = 'Aa 区分大小写：' + (self.caseSensitive ? '开' : '关'); self.scan(find.value); });
     const info = contentEl.createDiv('nws-fr-info'); info.style.cssText = 'font-size:11px;color:var(--text-muted);min-height:18px';
 
@@ -3594,8 +4157,8 @@ class FindReplaceModal extends Modal {
       const re = new RegExp(esc(q), flags);
       const newText = text.replace(re, repl.value);
       const count = (text.match(re) || []).length;
-      if (count) { self.editor.setValue(newText); new Notice('已替换 ' + count + ' 处'); }
-      else new Notice('未找到匹配');
+      if (count) { self.editor.setValue(newText); new Notice(t('已替换 ') + count + t(' 处')); }
+      else new Notice(t('未找到匹配'));
       self.scan(find.value, info);
     });
     this.findInput = find;
@@ -3628,8 +4191,8 @@ class SettingPickModal extends Modal {
   constructor(app, plugin, onPick, onCancel) { super(app); this.p = plugin; this.onPick = onPick; this.onCancel = onCancel; this.q = ''; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: '插入设定 / 情节' });
-    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = '搜索设定库…（名称/别名）'; inp.style.width = '100%';
+    contentEl.createEl('h3', { text: t('插入设定 / 情节') });
+    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('搜索设定库…（名称/别名）'); inp.style.width = '100%';
     const list = contentEl.createDiv('nws-suggest-list');
     const render = () => {
       list.empty();
@@ -3644,7 +4207,7 @@ class SettingPickModal extends Modal {
         const t = row.createSpan({ text: it.kind === 'plot' ? '情节' : it.type }); t.style.cssText = 'margin-left:auto;font-size:10px;color:var(--text-muted)';
         row.addEventListener('click', () => { this.picked = true; this.onPick(it); this.close(); });
       });
-      if (!list.children.length) list.createEl('div', { text: '无匹配，可直接关闭继续输入' }).style.cssText = 'font-size:11px;color:var(--text-muted);padding:8px';
+      if (!list.children.length) list.createEl('div', { text: t('无匹配，可直接关闭继续输入') }).style.cssText = 'font-size:11px;color:var(--text-muted);padding:8px';
     };
     inp.addEventListener('input', (e) => { this.q = e.target.value; render(); });
     inp.addEventListener('keydown', (e) => {
@@ -3663,10 +4226,10 @@ class InspirationEditModal extends Modal {
   onOpen() {
     const p = this.p, n = this.note, { contentEl } = this, isNew = !n;
     contentEl.createEl('h3', { text: isNew ? '新建灵感' : '处理灵感' });
-    const contentTa = contentEl.createEl('textarea'); contentTa.style.cssText = 'width:100%;height:70px'; contentTa.placeholder = '灵感内容…';
+    const contentTa = contentEl.createEl('textarea'); contentTa.style.cssText = 'width:100%;height:70px'; contentTa.placeholder = t('灵感内容…');
     if (n) contentTa.value = n.content;
 
-    contentEl.createEl('p', { text: '① 处理状态' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    contentEl.createEl('p', { text: t('① 处理状态') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
     let status = n ? (n.status || '待定') : '待定';
     const statusRow = contentEl.createDiv(); statusRow.style.cssText = 'display:inline-flex;gap:6px';
     const sBtns = [];
@@ -3677,7 +4240,7 @@ class InspirationEditModal extends Modal {
       sBtns.push(b);
     });
 
-    contentEl.createEl('p', { text: '② 绑定到设定 / 情节（可选，说明这条灵感属于谁）' }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
+    contentEl.createEl('p', { text: t('② 绑定到设定 / 情节（可选，说明这条灵感属于谁）') }).style.cssText = 'font-weight:600;margin-top:12px;margin-bottom:6px';
     const bindBox = contentEl.createDiv('nws-selbox');
     const renderBinds = () => {
       bindBox.empty();
@@ -3686,7 +4249,7 @@ class InspirationEditModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { this.binds = this.binds.filter((x) => !(x.id === b.id && x.kind === b.kind)); renderBinds(); });
       });
-      const add = bindBox.createEl('button', { text: '＋ 绑定（情节/人物/线索…）' }); add.className = 'nws-btn sm';
+      const add = bindBox.createEl('button', { text: t('＋ 绑定（情节/人物/线索…）') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new LineBindModal(this.app, p, (pick) => {
         if (!this.binds.some((x) => x.id === pick.id && x.kind === pick.kind)) { this.binds.push(pick); renderBinds(); }
       }).open());
@@ -3698,7 +4261,7 @@ class InspirationEditModal extends Modal {
     ok.addEventListener('click', async () => {
       const fields = { content: contentTa.value.trim() || '（空灵感）', status, bindings: this.binds };
       if (isNew) { await p.captureInspiration(fields.content, '', { status, bindings: this.binds }); }
-      else { await p.updateNote(n.id, fields); new Notice('灵感已更新'); }
+      else { await p.updateNote(n.id, fields); new Notice(t('灵感已更新')); }
       this.close();
     });
     setTimeout(() => contentTa.focus(), 30);
@@ -3710,12 +4273,12 @@ class EntityCreateModal extends Modal {
   constructor(app, plugin, presetLib, presetGroup, presetName) { super(app); this.p = plugin; this.preset = presetLib; this.presetGroup = presetGroup; this.presetName = presetName; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: '新建设定 · 选大类' });
-    const desc = contentEl.createEl('div', { text: '第 1 步选一个大类（每类有专属模板）→ 第 2 步填名称 → 创建。会在 设定/<大类>/ 下生成同名 md 笔记，按模板补充即可。语言风格或自定义内容选「独立」。' });
+    contentEl.createEl('h3', { text: t('新建设定 · 选大类') });
+    const desc = contentEl.createEl('div', { text: t('第 1 步选一个大类（每类有专属模板）→ 第 2 步填名称 → 创建。会在 设定/<大类>/ 下生成同名 md 笔记，按模板补充即可。语言风格或自定义内容选「独立」。') });
     desc.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:10px';
 
     /* ① 大类（v2.6 单纯大库版：无二级小库；若从右键带入了具体小库，则自动归到对应大类并沿用该小库模板） */
-    contentEl.createEl('p', { text: '① 选择大类' }).style.cssText = 'font-weight:600;margin:0 0 5px';
+    contentEl.createEl('p', { text: t('① 选择大类') }).style.cssText = 'font-weight:600;margin:0 0 5px';
     const groupRow = contentEl.createDiv(); groupRow.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap';
     /* presetLib 传入时定位其所属大类 */
     let chosenGroup = null, presetLib = this.preset && LIB_BY_NAME[this.preset] ? this.preset : null;
@@ -3723,8 +4286,8 @@ class EntityCreateModal extends Modal {
     if (!chosenGroup && this.presetGroup && GROUP_BY_NAME[this.presetGroup]) chosenGroup = this.presetGroup;
     let activeGroupBtn = null;
     const customWrap = contentEl.createDiv('nws-custom-type'); customWrap.style.cssText = 'margin-top:8px;display:none';
-    customWrap.createSpan({ text: '自定义类型名：' }).style.cssText = 'font-size:11px';
-    const customInp = customWrap.createEl('input'); customInp.type = 'text'; customInp.placeholder = '如：法宝、功法、神通…'; customInp.style.cssText = 'width:100%;margin-top:4px';
+    customWrap.createSpan({ text: t('自定义类型名：') }).style.cssText = 'font-size:11px';
+    const customInp = customWrap.createEl('input'); customInp.type = 'text'; customInp.placeholder = t('如：法宝、功法、神通…'); customInp.style.cssText = 'width:100%;margin-top:4px';
     const hint = contentEl.createDiv('nws-tpl-hint'); hint.style.cssText = 'font-size:10px;color:var(--text-muted);margin-top:8px;line-height:1.6';
 
     /* 每个大类下本条设定实际用的小库（模板来源）：优先 presetLib，否则该类第一个小库 */
@@ -3753,27 +4316,27 @@ class EntityCreateModal extends Modal {
     }
     syncHint();
 
-    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = '② 设定名称（将作为文件名）'; inp.style.cssText = 'width:100%;margin-top:12px';
+    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('② 设定名称（将作为文件名）'); inp.style.cssText = 'width:100%;margin-top:12px';
     if (this.presetName) inp.value = this.presetName;
 
     /* 第 3 步：颜色（正文着色方式） */
-    contentEl.createEl('p', { text: '③ 正文高亮颜色（可选）' }).style.cssText = 'font-weight:600;margin:12px 0 5px';
+    contentEl.createEl('p', { text: t('③ 正文高亮颜色（可选）') }).style.cssText = 'font-weight:600;margin:12px 0 5px';
     const colorRow = contentEl.createDiv(); colorRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
     let chosenColor = p.typeColor(chosen || '自定义');
     const colorBtns = [];
     PALETTE.forEach((col, i) => {
       const cb = colorRow.createEl('button');
       cb.style.cssText = 'width:24px;height:24px;border-radius:50%;border:' + (i === chosenColor ? '3px solid var(--text-normal)' : '2px solid ' + col) + ';background:' + col + ';cursor:pointer';
-      cb.title = PALETTE_NAMES[i] + '（正文彩色加粗）';
+      cb.title = t(PALETTE_NAMES[i]) + t('（正文彩色加粗）');
       cb.addEventListener('click', () => { chosenColor = i; colorBtns.forEach((x, j) => x.style.border = (j === i ? '3px solid var(--text-normal)' : '2px solid ' + PALETTE[j])); noColorBtn.style.border = '2px solid var(--text-muted)'; });
       colorBtns.push(cb);
     });
-    const noColorBtn = colorRow.createEl('button', { text: '无颜色（加粗+下划线）' });
+    const noColorBtn = colorRow.createEl('button', { text: t('无颜色（加粗+下划线）') });
     noColorBtn.className = 'nws-btn sm';
     noColorBtn.addEventListener('click', () => { chosenColor = -1; colorBtns.forEach((x, j) => x.style.border = '2px solid ' + PALETTE[j]); noColorBtn.style.border = '2px solid var(--text-normal)'; });
 
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:12px;text-align:right';
-    const ok = row.createEl('button', { text: '创建并生成模板笔记' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('创建并生成模板笔记') }); ok.className = 'mod-cta';
     const submit = async () => {
       if (!inp.value.trim()) return;
       let type = chosen;
@@ -3787,7 +4350,7 @@ class EntityCreateModal extends Modal {
       const e = await p.addEntity(inp.value.trim(), type, chosenGroup);
       if (e) { e.color = chosenColor; await p.writeEntityFile(e, false); await p.saveNow(); p.entityVersion++; p.refreshViews(); }
       this.close();
-      if (e) { new Notice('已创建 设定/' + groupFolderName(chosenGroup) + '/' + e.name + '.md'); p.openEntityFile(e.id); }
+      if (e) { new Notice(t('已创建 设定/') + groupFolderName(chosenGroup) + '/' + e.name + '.md'); p.openEntityFile(e.id); }
     };
     ok.addEventListener('click', submit);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -3803,10 +4366,10 @@ class BindModal extends Modal {
     const { contentEl } = this, p = this.p;
     const owner = this.ownerKind === 'outline' ? p.outlineById(this.ownerId) : p.entityById(this.ownerId);
     if (!owner) { this.close(); return; }
-    contentEl.createEl('h3', { text: '绑定对象 · ' + (owner.title || owner.name) });
-    const hint = contentEl.createEl('div', { text: '点击条目切换绑定/取消。可绑定章节、设定（角色/情节/背景等）、其它大纲。' });
+    contentEl.createEl('h3', { text: t('绑定对象 · ') + (owner.title || owner.name) });
+    const hint = contentEl.createEl('div', { text: t('点击条目切换绑定/取消。可绑定章节、设定（角色/情节/背景等）、其它大纲。') });
     hint.style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px';
-    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = '搜索…'; inp.style.width = '100%';
+    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('搜索…'); inp.style.width = '100%';
     const list = contentEl.createDiv(); list.style.cssText = 'max-height:340px;overflow:auto;margin-top:8px';
     const isBound = (kind, id) => (owner.bindings || []).some((b) => b.kind === kind && b.id === id);
     const render = () => {
@@ -3848,9 +4411,9 @@ class EntityDetailModal extends Modal {
     [['全书出现', pe.total + ' 次'], ['涉及章节', Object.keys(pe.chapters).length + ' 章'], ['首次出现', pe.first || '—'], ['最近出现', pe.last || '—']].forEach((kv) => {
       const c = stats.createDiv('nws-sc'); c.createDiv('nws-k').textContent = kv[0]; c.createDiv('nws-v').textContent = kv[1];
     });
-    contentEl.createEl('h4', { text: '每章出现次数' });
+    contentEl.createEl('h4', { text: t('每章出现次数') });
     const entries = Object.keys(pe.chapters).sort((a, b) => pe.chapters[b] - pe.chapters[a]);
-    if (!entries.length) contentEl.createEl('div', { text: '（正文中暂未出现）' }).style.cssText = 'font-size:11px;color:var(--text-muted)';
+    if (!entries.length) contentEl.createEl('div', { text: t('（正文中暂未出现）') }).style.cssText = 'font-size:11px;color:var(--text-muted)';
     const max = Math.max(1, ...entries.map((k) => pe.chapters[k]));
     entries.forEach((path) => {
       const row = contentEl.createDiv('nws-dist');
@@ -3862,23 +4425,23 @@ class EntityDetailModal extends Modal {
       row.addEventListener('click', () => { p.openChapterByPath(path); this.close(); });
     });
     const binds = e.bindings || [];
-    contentEl.createEl('h4', { text: '绑定对象（' + binds.length + '）' });
+    contentEl.createEl('h4', { text: t('绑定对象（') + binds.length + '）' });
     if (binds.length) {
       const bwrap = contentEl.createDiv(); bwrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
       binds.forEach((b) => {
         const chip = bwrap.createEl('span', { text: (b.kind === 'chapter' ? '📄' : b.kind === 'entity' ? '🔗' : '📋') + ' ' + (b.name || b.id) });
         chip.className = 'nws-bind';
       });
-    } else contentEl.createEl('div', { text: '（未绑定）' }).style.cssText = 'font-size:11px;color:var(--text-muted)';
+    } else contentEl.createEl('div', { text: t('（未绑定）') }).style.cssText = 'font-size:11px;color:var(--text-muted)';
 
     const row = contentEl.createDiv('nws-row'); row.style.marginTop = '14px';
-    const openFile = row.createEl('button', { text: '📄 打开设定文件' }); openFile.className = 'nws-btn pri';
+    const openFile = row.createEl('button', { text: t('📄 打开设定文件') }); openFile.className = 'nws-btn pri';
     openFile.addEventListener('click', () => { this.close(); p.openEntityFile(e.id); });
-    const edit = row.createEl('button', { text: '编辑元数据' }); edit.className = 'nws-btn'; edit.style.marginLeft = '8px';
+    const edit = row.createEl('button', { text: t('编辑元数据') }); edit.className = 'nws-btn'; edit.style.marginLeft = '8px';
     edit.addEventListener('click', () => { this.close(); new EntityEditModal(this.app, p, e).open(); });
-    const bind = row.createEl('button', { text: '🔗 管理绑定' }); bind.className = 'nws-btn'; bind.style.marginLeft = '8px';
+    const bind = row.createEl('button', { text: t('🔗 管理绑定') }); bind.className = 'nws-btn'; bind.style.marginLeft = '8px';
     bind.addEventListener('click', () => { this.close(); new BindModal(this.app, p, 'entity', e.id).open(); });
-    const del = row.createEl('button', { text: '删除' }); del.className = 'nws-btn'; del.style.marginLeft = '8px';
+    const del = row.createEl('button', { text: t('删除') }); del.className = 'nws-btn'; del.style.marginLeft = '8px';
     del.addEventListener('click', () => { this.close(); p.deleteEntity(e.id); });
   }
   onClose() { this.contentEl.empty(); }
@@ -3889,7 +4452,7 @@ class EntityEditModal extends Modal {
   onOpen() {
     const { contentEl } = this, p = this.p, e = this.e;
     if (!e) { this.close(); return; }
-    contentEl.createEl('h3', { text: '编辑设定 · ' + e.name });
+    contentEl.createEl('h3', { text: t('编辑设定 · ') + e.name });
     const name = contentEl.createEl('input'); name.type = 'text'; name.value = e.name; name.style.width = '100%';
 
     /* 两级归属：大类 → 小库 */
@@ -3898,7 +4461,7 @@ class EntityEditModal extends Modal {
     const selNote = contentEl.createDiv(); selNote.style.cssText = 'margin-top:10px;font-size:11px;color:var(--text-muted)';
     const refreshSelNote = () => { selNote.textContent = '归属：' + groupEmoji(chosenGroup) + ' ' + chosenGroup + ' / ' + ((LIB_BY_NAME[chosen] || {}).emoji || '🔹') + ' ' + chosen; };
     const gpRow = contentEl.createDiv(); gpRow.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap;margin-top:6px';
-    contentEl.createEl('p', { text: '大类' }).style.cssText = 'font-weight:600;margin:10px 0 0';
+    contentEl.createEl('p', { text: t('大类') }).style.cssText = 'font-weight:600;margin:10px 0 0';
     const libRow = contentEl.createDiv(); libRow.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap;margin-top:6px';
     let activeG = null, activeL = null;
     const renderLibs = () => {
@@ -3920,17 +4483,17 @@ class EntityEditModal extends Modal {
     });
     renderLibs(); refreshSelNote();
 
-    contentEl.createEl('p', { text: '别名（逗号分隔，正文命中即标注并计入统计）' });
+    contentEl.createEl('p', { text: t('别名（逗号分隔，正文命中即标注并计入统计）') });
     const aliases = contentEl.createEl('input'); aliases.type = 'text'; aliases.value = (e.aliases || []).join('、'); aliases.style.width = '100%';
     /* 颜色：沿用当前，可在详情里用 🎨 调整 */
-    contentEl.createEl('p', { text: '描述' });
+    contentEl.createEl('p', { text: t('描述') });
     const desc = contentEl.createEl('textarea'); desc.value = e.desc || ''; desc.style.cssText = 'width:100%;height:70px';
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:12px;text-align:right';
-    const ok = row.createEl('button', { text: '保存' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('保存') }); ok.className = 'mod-cta';
     ok.addEventListener('click', async () => {
       const al = aliases.value.split(/[、,，]/).map((s) => s.trim()).filter(Boolean);
       await p.updateEntity(e.id, { name: name.value.trim() || e.name, type: chosen, group: chosenGroup, aliases: al, desc: desc.value });
-      new Notice('设定已保存'); this.close();
+      new Notice(t('设定已保存')); this.close();
     });
   }
   onClose() { this.contentEl.empty(); }
@@ -3940,7 +4503,7 @@ class EntityEditModal extends Modal {
 class StatsView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.days = 365; this.gran = 'day'; }
   getViewType() { return VIEW_STATS; }
-  getDisplayText() { return '写作台 · 数据中心'; }
+  getDisplayText() { return t('写作台 · 数据中心'); }
   getIcon() { return 'chart-no-axes-column'; }
   async onOpen() { this.render(); }
   render() {
@@ -4391,6 +4954,7 @@ class ChapterStatsModal extends Modal {
       '</div>';
 
     this.contentEl.innerHTML = html;
+    trNode(this.contentEl);
     this.modalEl.classList.toggle('nws-wide', false);
     /* Top10 点击 → 打开设定详情 */
     this.contentEl.querySelectorAll('.nws-chtop').forEach((r) => r.addEventListener('click', () => {
@@ -4417,12 +4981,12 @@ class ChapterMoveModal extends Modal {
       const i = rel.indexOf('/');
       if (i > 0 && vols.indexOf(rel.slice(0, i)) < 0) vols.push(rel.slice(0, i));
     });
-    contentEl.createEl('h3', { text: '📁 移动章节「' + title + '」' });
-    const desc = contentEl.createEl('div', { text: '当前所在卷：' + cur + '。点击目标卷即移动（章节文件与其状态/目标/计时数据一起走）。' });
+    contentEl.createEl('h3', { text: t('📁 移动章节「') + title + '」' });
+    const desc = contentEl.createEl('div', { text: t('当前所在卷：') + cur + '。点击目标卷即移动（章节文件与其状态/目标/计时数据一起走）。' });
     desc.style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:10px;line-height:1.6';
     const row = contentEl.createDiv(); row.style.cssText = 'display:flex;flex-direction:column;gap:6px';
     const targets = ['（未分卷）'].concat(vols.filter((v) => v !== cur));
-    if (!targets.length) { const t = contentEl.createEl('div', { text: '没有其他可移动的卷。可先在目录「＋ 新建卷」。' }); t.style.cssText = 'color:var(--text-muted);font-size:12px'; return; }
+    if (!targets.length) { const t = contentEl.createEl('div', { text: t('没有其他可移动的卷。可先在目录「＋ 新建卷」。') }); t.style.cssText = 'color:var(--text-muted);font-size:12px'; return; }
     targets.forEach((v) => {
       const b = row.createEl('button', { text: (v === '（未分卷）' ? '📂 ' + v + '（正文根目录）' : '📚 ' + v) });
       b.className = 'nws-btn';
@@ -4450,13 +5014,13 @@ class VolumeStatsModal extends Modal {
     /* 计时聚合 */
     const tim = list.reduce((acc, c) => { const t = p.chapterTiming(c.path); acc.open += t.open; acc.active += t.active; acc.focus += t.focus; acc.written += t.written; return acc; }, { open: 0, active: 0, focus: 0, written: 0 });
     const stCount = list.map((c) => (c.status == null ? (c.words > 0 ? 1 : 0) : c.status));
-    const stRows = CH_STATUS.map((s, i) => '<span class="nws-tag">' + s + ' × ' + stCount.filter((x) => x === i).length + '</span>').join(' ');
+    const stRows = CH_STATUS.map((s, i) => '<span class="nws-tag">' + t(s) + ' × ' + stCount.filter((x) => x === i).length + '</span>').join(' ');
     const pct = target > 0 ? Math.min(100, Math.round(words / target * 100)) : 0;
 
-    contentEl.createEl('h3', { text: '📊 卷数据分析 · ' + this.volume });
+    contentEl.createEl('h3', { text: t('📊 卷数据分析 · ') + this.volume });
     const cards = contentEl.createDiv();
     cards.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px';
-    [['章节数', list.length], ['总字数', fmt(words)], ['总目标', target > 0 ? fmt(target) : '未设'], ['完成度', pct + '%']].forEach((kv) => {
+    [[t('章节数'), list.length], [t('总字数'), fmt(words)], [t('总目标'), target > 0 ? fmt(target) : t('未设')], [t('完成度'), pct + '%']].forEach((kv) => {
       const d = cards.createDiv(); d.style.cssText = 'background:var(--background-secondary);border-radius:8px;padding:8px;text-align:center';
       const k = d.createDiv(); k.textContent = kv[0]; k.style.cssText = 'font-size:10px;color:var(--text-muted)';
       const v = d.createDiv(); v.textContent = String(kv[1]); v.style.cssText = 'font-size:16px;font-weight:700';
@@ -4469,14 +5033,14 @@ class VolumeStatsModal extends Modal {
     /* 各章表 */
     const tbl = contentEl.createEl('table');
     tbl.style.cssText = 'width:100%;font-size:12px;border-collapse:collapse;margin-bottom:12px';
-    tbl.innerHTML = '<thead><tr>' + ['章节', '状态', '字数/目标', '打开', '码字', '偷懒', '专注'].map((h) => '<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--background-modifier-border)">' + h + '</th>').join('') + '</tr></thead><tbody>' +
+    tbl.innerHTML = '<thead><tr>' + ['章节', '状态', '字数/目标', '打开', '码字', '偷懒', '专注'].map((h) => '<th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--background-modifier-border)">' + t(h) + '</th>').join('') + '</tr></thead><tbody>' +
       list.map((c) => {
         const t = p.chapterTiming(c.path);
         const st = CH_STATUS[c.status == null ? (c.words > 0 ? 1 : 0) : c.status];
         return '<tr>' + ['<td>' + escapeHtml(c.title) + '</td>', '<td>' + st + '</td>', '<td>' + fmt(c.words) + ' / ' + (p.targetOf(c.path) || '—') + '</td>', '<td>' + fmtDur(t.open) + '</td>', '<td>' + fmtDur(t.active) + '</td>', '<td>' + fmtDur(t.open - t.active) + '</td>', '<td>' + fmtDur(t.focus) + '</td>'].join('') + '</tr>';
       }).join('') + '</tbody>';
     /* 卷内设定 Top10 */
-    contentEl.createEl('p', { text: '本卷出现的设定 Top 10' }).style.cssText = 'font-weight:600;margin-bottom:5px';
+    contentEl.createEl('p', { text: t('本卷出现的设定 Top 10') }).style.cssText = 'font-weight:600;margin-bottom:5px';
     if (top.length) {
       const max = agg[top[0]];
       const box = contentEl.createDiv();
@@ -4504,17 +5068,17 @@ class AnnotationModal extends Modal {
   constructor(app, plugin, path, quote, from, to) { super(app); this.p = plugin; this.path = path; this.quote = quote; this.from = from; this.to = to; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: '📝 添加批注' });
+    contentEl.createEl('h3', { text: t('📝 添加批注') });
     const q = contentEl.createDiv();
     q.style.cssText = 'font-size:11px;color:var(--text-muted);background:var(--background-secondary);padding:7px 9px;border-radius:7px;line-height:1.6;margin-bottom:10px';
     q.textContent = '批注对象：「' + this.quote.slice(0, 80) + (this.quote.length > 80 ? '…' : '') + '」';
-    contentEl.createEl('p', { text: '批注内容（原文不会改动；鼠标悬浮在原文该段上即可看到批注）' }).style.cssText = 'font-weight:600;margin-bottom:5px';
+    contentEl.createEl('p', { text: t('批注内容（原文不会改动；鼠标悬浮在原文该段上即可看到批注）') }).style.cssText = 'font-weight:600;margin-bottom:5px';
     const ta = contentEl.createEl('textarea');
-    ta.placeholder = '写下你的想法：这段为什么要这样写、要修改什么、灵感延伸…';
+    ta.placeholder = t('写下你的想法：这段为什么要这样写、要修改什么、灵感延伸…');
     ta.style.cssText = 'width:100%;height:110px;font-size:13px';
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:10px;text-align:right';
-    const cancel = row.createEl('button', { text: '取消' }); cancel.style.marginRight = '8px';
-    const ok = row.createEl('button', { text: '保存批注' }); ok.className = 'mod-cta';
+    const cancel = row.createEl('button', { text: t('取消') }); cancel.style.marginRight = '8px';
+    const ok = row.createEl('button', { text: t('保存批注') }); ok.className = 'mod-cta';
     cancel.addEventListener('click', () => this.close());
     ok.addEventListener('click', async () => {
       await p.addAnnotation(this.path, this.quote, ta.value.trim(), this.from, this.to);
@@ -4529,7 +5093,7 @@ class AnnotationModal extends Modal {
 class AnnotsView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
   getViewType() { return VIEW_ANNOT; }
-  getDisplayText() { return '写作台 · 批注'; }
+  getDisplayText() { return t('写作台 · 批注'); }
   getIcon() { return 'sticky-note'; }
   async onOpen() { this.render(); }
   render() {
@@ -4564,7 +5128,7 @@ class AnnotsView extends ItemView {
     }));
     root.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (confirm('删除这条批注？')) p.deleteAnnotation(b.dataset.del);
+      if (confirm(t('删除这条批注？'))) p.deleteAnnotation(b.dataset.del);
     }));
     root.querySelectorAll('tr[data-aid]').forEach((tr) => tr.addEventListener('click', () => {
       const a = p.annotById(tr.dataset.aid);
@@ -4578,7 +5142,7 @@ class AnnotationEditModal extends Modal {
   constructor(app, plugin, annot) { super(app); this.p = plugin; this.a = annot; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: '📝 编辑批注' });
+    contentEl.createEl('h3', { text: t('📝 编辑批注') });
     const q = contentEl.createDiv();
     q.style.cssText = 'font-size:11px;color:var(--text-muted);background:var(--background-secondary);padding:7px 9px;border-radius:7px;line-height:1.6;margin-bottom:10px';
     q.textContent = '批注对象：「' + String(this.a.quote || '').slice(0, 80) + '」';
@@ -4586,109 +5150,136 @@ class AnnotationEditModal extends Modal {
     ta.value = this.a.note || '';
     ta.style.cssText = 'width:100%;height:110px;font-size:13px';
     const row = contentEl.createDiv(); row.style.cssText = 'margin-top:10px;text-align:right';
-    const ok = row.createEl('button', { text: '保存' }); ok.className = 'mod-cta';
+    const ok = row.createEl('button', { text: t('保存') }); ok.className = 'mod-cta';
     ok.addEventListener('click', async () => { await p.updateAnnotation(this.a.id, { note: ta.value.trim() }); this.close(); });
     setTimeout(() => ta.focus(), 30);
   }
   onClose() { this.contentEl.empty(); }
 }
 
-/* ================= v2.1 番茄钟 / 专注模式 ================= */
+/* ================= v2.17 专注写作（番茄钟 + 专注模式合并入口 + 写作场景） ================= */
 class FocusModal extends Modal {
-  constructor(app, plugin, mode) { super(app); this.p = plugin; this.mode = mode || 'focus'; }
+  constructor(app, plugin, mode) {
+    super(app);
+    this.p = plugin;
+    this.mode = mode || plugin.settings.focusModeDefault || 'pomodoro';
+    if (this.mode !== 'pomodoro' && this.mode !== 'focus') this.mode = 'pomodoro';
+  }
   onOpen() {
     const { contentEl } = this, p = this.p;
+    p.settings.focusModeDefault = this.mode;
     contentEl.empty();
-    contentEl.createEl('h3', { text: this.mode === 'pomodoro' ? '🍅 番茄钟' : '🎯 专注模式' });
+    contentEl.createEl('h3', { text: '🎯 专注写作' });
     const desc = contentEl.createDiv();
     desc.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:10px';
     desc.textContent = this.mode === 'pomodoro'
-      ? '专注 ' + p.settings.pomodoroWork + ' 分 / 短休 ' + p.settings.pomodoroBreak + ' 分 / ' + p.settings.pomodoroRounds + ' 轮后长休 ' + p.settings.pomodoroLongBreak + ' 分；可在下方直接输入任意分钟数。'
-      : '进入全屏禅模式：低刺激深色壁纸 + 可选背景音 + 打字音效；当前段高亮、前后渐淡。';
+      ? '🍅 番茄钟：专注 ' + p.settings.pomodoroWork + ' 分 / 短休 ' + p.settings.pomodoroBreak + ' 分 / ' + p.settings.pomodoroRounds + ' 轮后长休 ' + p.settings.pomodoroLongBreak + ' 分；也可直接输入任意分钟数。'
+      : '🎯 自由专注：可选全屏禅模式（低刺激深色壁纸 + 背景音 + 打字音效 + 当前段高亮）；时长任意。';
+
+    /* --- 模式切换（合并入口） --- */
+    const mrow = contentEl.createDiv(); mrow.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
+    const modeBtnP = mrow.createEl('button', { text: '🍅 番茄钟' }); modeBtnP.className = 'nws-fbtn' + (this.mode === 'pomodoro' ? ' on' : '');
+    const modeBtnF = mrow.createEl('button', { text: '🎯 自由专注' }); modeBtnF.className = 'nws-fbtn' + (this.mode === 'focus' ? ' on' : '');
+    modeBtnP.addEventListener('click', () => { if (this.mode !== 'pomodoro') { this.mode = 'pomodoro'; this.onOpen(); } });
+    modeBtnF.addEventListener('click', () => { if (this.mode !== 'focus') { this.mode = 'focus'; this.onOpen(); } });
+
+    /* --- 写作场景（预设 + 自定义；一键打包切换 壁纸/背景音/打字音效/打字模式/全屏） --- */
+    contentEl.createEl('div', { text: '写作场景（一键切换氛围；自定义：先调好壁纸/音效再「存为场景」）' }).style.cssText = 'font-size:11px;font-weight:600;margin:2px 0 5px';
+    const scnRow = contentEl.createDiv(); scnRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px';
+    let actScn = null;
+    p.sceneList().forEach((s) => {
+      const b = scnRow.createEl('button', { text: s.name }); b.className = 'nws-fbtn' + (s.id === p.settings.focusScene ? ' on' : '');
+      if (s.id === p.settings.focusScene) actScn = b;
+      b.addEventListener('click', async () => { if (actScn) actScn.removeClass('on'); b.addClass('on'); actScn = b; await p.applyScene(s.id); });
+    });
+    const scnSave = scnRow.createEl('button', { text: '＋ 存为场景' }); scnSave.className = 'nws-fbtn';
+    scnSave.addEventListener('click', () => new InputModal(this.app, '保存为自定义场景', '场景名称（把当前的壁纸/音效/打字模式打包）', async (v) => {
+      if (!v.trim()) return;
+      await p.saveSceneAs(v.trim());
+      this.onOpen();
+    }).open());
 
     /* --- 计时选择 --- */
     const row = contentEl.createDiv(); row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px';
-    row.createSpan({ text: '时长：' }).style.cssText = 'font-size:11px';
+    row.createSpan({ text: t('时长：') }).style.cssText = 'font-size:11px';
     let chosenSec = 0;
     const presets = this.mode === 'pomodoro'
       ? [{ l: '专注 ' + p.settings.pomodoroWork + '分', s: p.settings.pomodoroWork * 60 }, { l: '短休 ' + p.settings.pomodoroBreak + '分', s: p.settings.pomodoroBreak * 60 }, { l: '长休 ' + p.settings.pomodoroLongBreak + '分', s: p.settings.pomodoroLongBreak * 60 }]
       : [{ l: '15 分', s: 900 }, { l: '25 分', s: 1500 }, { l: '45 分', s: 2700 }, { l: '90 分', s: 5400 }];
     let activeBtn = null;
     presets.forEach((ps, i) => {
-      const b = row.createEl('button', { text: ps.l }); b.className = 'nws-fbtn' + (i === (this.mode === 'pomodoro' ? 0 : 0) ? ' on' : '');
+      const b = row.createEl('button', { text: ps.l }); b.className = 'nws-fbtn' + (i === 0 ? ' on' : '');
       if (i === 0) { activeBtn = b; chosenSec = ps.s; }
       b.addEventListener('click', () => { if (activeBtn) activeBtn.removeClass('on'); b.addClass('on'); activeBtn = b; chosenSec = ps.s; });
     });
     /* v2.8：任意分钟数直接输入（1-600），输入后自动记住为默认 */
     const crow = contentEl.createDiv(); crow.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0 6px';
-    crow.createSpan({ text: '自定义分钟：' }).style.cssText = 'font-size:11px';
+    crow.createSpan({ text: t('自定义分钟：') }).style.cssText = 'font-size:11px';
     const minInput = crow.createEl('input'); minInput.type = 'number'; minInput.min = '1'; minInput.max = '600';
     minInput.value = String(this.mode === 'pomodoro' ? (p.settings.pomodoroWork || 25) : (p.settings.focusMinutes || 25));
     minInput.style.cssText = 'width:64px;font-size:12px;padding:3px 6px';
-    const applyBtn = crow.createEl('button', { text: '应用' }); applyBtn.className = 'nws-fbtn';
+    const applyBtn = crow.createEl('button', { text: t('应用') }); applyBtn.className = 'nws-fbtn';
     const applyMinutes = () => {
       const n = clamp(parseInt(minInput.value, 10) || 0, 1, 600);
-      if (!n) { new Notice('请输入 1-600 的分钟数'); return; }
+      if (!n) { new Notice(t('请输入 1-600 的分钟数')); return; }
       minInput.value = String(n);
       chosenSec = n * 60;
       if (activeBtn) activeBtn.removeClass('on');
       if (this.mode === 'pomodoro') { p.settings.pomodoroWork = n; } else { p.settings.focusMinutes = n; }
       p.saveNow();
-      new Notice('已设为 ' + n + ' 分钟');
+      new Notice(t('已设为 ') + n + t(' 分钟'));
     };
     applyBtn.addEventListener('click', applyMinutes);
     minInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyMinutes(); });
 
-    if (this.mode === 'focus') {
-      /* 全屏禅模式开关 */
-      const frow = contentEl.createDiv(); frow.style.cssText = 'margin-top:10px;display:flex;align-items:center;gap:8px';
-      const fcb = frow.createEl('input'); fcb.type = 'checkbox'; fcb.checked = p.settings.focusFullscreen !== false;
-      frow.createSpan({ text: '进入专注自动全屏（隐藏两侧边栏，退出时还原）' }).style.cssText = 'font-size:11px';
-      fcb.addEventListener('change', async () => { p.settings.focusFullscreen = fcb.checked; await p.saveNow(); });
-      /* 壁纸选择（含新增低刺激深色系） */
-      contentEl.createEl('div', { text: '专注壁纸' }).style.cssText = 'font-size:11px;font-weight:600;margin:12px 0 5px';
-      const wrow = contentEl.createDiv(); wrow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
-      let aw = null;
-      FOCUS_WALLPAPERS.forEach((w) => {
-        const b = wrow.createEl('button', { text: w.name }); b.className = 'nws-fbtn' + (w.id === p.settings.focusWallpaper ? ' on' : '');
-        if (w.id === p.settings.focusWallpaper) aw = b;
-        b.addEventListener('click', () => { if (aw) aw.removeClass('on'); b.addClass('on'); aw = b; p.settings.focusWallpaper = w.id; p.saveNow(); });
+    /* --- 氛围设置（两种模式通用；全屏禅模式仅「自由专注」进入时生效） --- */
+    contentEl.createEl('div', { text: t('专注壁纸') }).style.cssText = 'font-size:11px;font-weight:600;margin:10px 0 5px';
+    const wrow = contentEl.createDiv(); wrow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    let aw = null;
+    FOCUS_WALLPAPERS.forEach((w) => {
+      const b = wrow.createEl('button', { text: w.name }); b.className = 'nws-fbtn' + (w.id === p.settings.focusWallpaper ? ' on' : '');
+      if (w.id === p.settings.focusWallpaper) aw = b;
+      b.addEventListener('click', () => { if (aw) aw.removeClass('on'); b.addClass('on'); aw = b; p.settings.focusWallpaper = w.id; p.settings.focusScene = ''; p.saveNow(); });
+    });
+    /* 打字音效：敲一下键响一声（与背景音无关） */
+    contentEl.createEl('div', { text: t('打字音效（每次敲键响一声）') }).style.cssText = 'font-size:11px;font-weight:600;margin:12px 0 5px';
+    const trow2 = contentEl.createDiv(); trow2.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    let at = null;
+    TYPING_SOUNDS.forEach((s) => {
+      const b = trow2.createEl('button', { text: s.name }); b.className = 'nws-fbtn' + ((s.id === p.settings.typeSound) || (s.id === 'key' && !p.settings.typeSound) ? ' on' : '');
+      if (b.hasClass('on')) at = b;
+      b.addEventListener('click', () => { if (at) at.removeClass('on'); b.addClass('on'); at = b; p.settings.typeSound = s.id; p.settings.focusScene = ''; p.saveNow(); if (s.id !== 'off') p.playTypeSound(true); });
+    });
+    /* 背景音：持续环境声，可选关闭 */
+    contentEl.createEl('div', { text: t('背景音（持续环境声，可关）') }).style.cssText = 'font-size:11px;font-weight:600;margin:12px 0 5px';
+    const srow = contentEl.createDiv(); srow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    let as = null;
+    FOCUS_SOUNDS.forEach((s) => {
+      const b = srow.createEl('button', { text: s.name }); b.className = 'nws-fbtn' + (s.id === p.settings.focusSound ? ' on' : '');
+      if (s.id === p.settings.focusSound) as = b;
+      b.addEventListener('click', () => {
+        if (as) as.removeClass('on'); b.addClass('on'); as = b;
+        p.settings.focusSound = s.id; p.settings.focusScene = ''; p.saveNow();
+        p.startSound(s.id); // 试听
       });
-      /* 打字音效：敲一下键响一声（与背景音无关） */
-      contentEl.createEl('div', { text: '打字音效（每次敲键响一声）' }).style.cssText = 'font-size:11px;font-weight:600;margin:12px 0 5px';
-      const trow2 = contentEl.createDiv(); trow2.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
-      let at = null;
-      TYPING_SOUNDS.forEach((s) => {
-        const b = trow2.createEl('button', { text: s.name }); b.className = 'nws-fbtn' + ((s.id === p.settings.typeSound) || (s.id === 'key' && !p.settings.typeSound) ? ' on' : '');
-        if (b.hasClass('on')) at = b;
-        b.addEventListener('click', () => { if (at) at.removeClass('on'); b.addClass('on'); at = b; p.settings.typeSound = s.id; p.saveNow(); if (s.id !== 'off') p.playTypeSound(true); });
-      });
-      /* 背景音：持续环境声，可选关闭 */
-      contentEl.createEl('div', { text: '背景音（持续环境声，可关）' }).style.cssText = 'font-size:11px;font-weight:600;margin:12px 0 5px';
-      const srow = contentEl.createDiv(); srow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
-      let as = null;
-      FOCUS_SOUNDS.forEach((s) => {
-        const b = srow.createEl('button', { text: s.name }); b.className = 'nws-fbtn' + (s.id === p.settings.focusSound ? ' on' : '');
-        if (s.id === p.settings.focusSound) as = b;
-        b.addEventListener('click', () => {
-          if (as) as.removeClass('on'); b.addClass('on'); as = b;
-          p.settings.focusSound = s.id; p.saveNow();
-          p.startSound(s.id); // 试听
-        });
-      });
-      /* 打字模式开关 */
-      const trow = contentEl.createDiv(); trow.style.cssText = 'margin-top:12px;display:flex;align-items:center;gap:8px';
-      const tcb = trow.createEl('input'); tcb.type = 'checkbox'; tcb.checked = !!p.settings.typingMode;
-      trow.createSpan({ text: '打字模式（当前段高亮，前后段逐渐变淡）' }).style.cssText = 'font-size:11px';
-      tcb.addEventListener('change', async () => { p.settings.typingMode = tcb.checked; p.entityVersion++; await p.saveNow(); });
-    }
+    });
+    /* 打字模式开关 */
+    const trow = contentEl.createDiv(); trow.style.cssText = 'margin-top:12px;display:flex;align-items:center;gap:8px';
+    const tcb = trow.createEl('input'); tcb.type = 'checkbox'; tcb.checked = !!p.settings.typingMode;
+    trow.createSpan({ text: t('打字模式（当前段高亮，前后段逐渐变淡）') }).style.cssText = 'font-size:11px';
+    tcb.addEventListener('change', async () => { p.settings.typingMode = tcb.checked; p.settings.focusScene = ''; p.entityVersion++; await p.saveNow(); });
+    /* 全屏禅模式开关 */
+    const frow = contentEl.createDiv(); frow.style.cssText = 'margin-top:6px;display:flex;align-items:center;gap:8px';
+    const fcb = frow.createEl('input'); fcb.type = 'checkbox'; fcb.checked = p.settings.focusFullscreen !== false;
+    frow.createSpan({ text: t('自由专注进入时自动全屏（隐藏两侧边栏，退出时还原）') }).style.cssText = 'font-size:11px';
+    fcb.addEventListener('change', async () => { p.settings.focusFullscreen = fcb.checked; await p.saveNow(); });
 
     /* 实时显示 */
     const live = contentEl.createDiv('nws-focus-live');
     live.style.cssText = 'margin-top:14px;padding:12px;border:1px solid var(--nws-line);border-radius:8px;text-align:center;background:var(--background-secondary)';
     const renderLive = () => {
       const s = p.focusState;
-      if (!s.active) { live.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">尚未开始 · 实时速度与剩余字数将在此显示</div>'; return; }
+      if (!s.active) { live.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">' + t('尚未开始 · 实时速度与剩余字数将在此显示') + '</div>'; return; }
       const left = Math.max(0, (s.left || 0));
       const f = p.app.workspace.getActiveFile();
       const target = f ? p.targetOf(f.path) : 0;
@@ -4696,23 +5287,23 @@ class FocusModal extends Modal {
       const remainWord = target > 0 ? Math.max(0, target - words) : 0;
       live.innerHTML = '<div style="font-size:26px;font-weight:600;font-variant-numeric:tabular-nums">' + fmtDur(left) + '</div>' +
         '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
-        (s.paused ? '⏸ 已暂停' : '● 进行中') + ' · ⚡ ' + p.pacePerMinute() + ' 字/分' +
-        (target > 0 ? ' · 本章还差 ' + fmt(remainWord) + ' 字' : '') + '</div>';
+        (s.paused ? t('⏸ 已暂停') : t('● 进行中')) + ' · ⚡ ' + p.pacePerMinute() + t(' 字/分') +
+        (target > 0 ? t(' · 本章还差 ') + fmt(remainWord) + t(' 字') : '') + '</div>';
     };
     renderLive();
     this._liveTimer = setInterval(() => renderLive(), 1000);
 
     /* 按钮 */
     const brow = contentEl.createDiv(); brow.style.cssText = 'margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end';
-    const startBtn = brow.createEl('button', { text: '▶ 开始' }); startBtn.className = 'mod-cta';
+    const startBtn = brow.createEl('button', { text: t('▶ 开始') }); startBtn.className = 'mod-cta';
     startBtn.addEventListener('click', () => {
-      if (p.focusState.active) { new Notice('已有计时进行中，请先结束'); return; }
+      if (p.focusState.active) { new Notice(t('已有计时进行中，请先结束')); return; }
       p.startFocusSession(this.mode === 'pomodoro' ? 'work' : 'focus', chosenSec || 1500);
       renderLive();
     });
-    const pauseBtn = brow.createEl('button', { text: '⏸ 暂停/继续' });
+    const pauseBtn = brow.createEl('button', { text: t('⏸ 暂停/继续') });
     pauseBtn.addEventListener('click', () => { if (p.focusState.active) { p.pauseFocusSession(); renderLive(); } });
-    const stopBtn = brow.createEl('button', { text: '■ 结束' });
+    const stopBtn = brow.createEl('button', { text: t('■ 结束') });
     stopBtn.addEventListener('click', () => { if (p.focusState.active) { p.stopFocusSession(); renderLive(); } });
   }
   onClose() {
@@ -4730,7 +5321,71 @@ class NSSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     const p = this.p;
     containerEl.empty();
-    containerEl.createEl('h2', { text: '小说写作台 · 设置' });
+    containerEl.createEl('h2', { text: t('小说写作台 · 设置') });
+
+    /* ===== v2.16 插件主题色（色卡 + 色环 + HEX） ===== */
+    containerEl.createEl('h3', { text: t('插件主题色') });
+    const themeNote = containerEl.createDiv();
+    themeNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
+    themeNote.textContent = '仅影响本插件的按钮/图表/标签配色，不改变 Obsidian 自身主题。可用色卡、色环或直接输入 16 进制色号（如 #8FA394）。';
+
+    new Setting(containerEl).setName(t('启用自定义主题色')).setDesc('关闭则恢复默认莫兰迪绿')
+      .addToggle((tg) => tg.setValue(p.settings.themeColorOn !== false).onChange(async (v) => { p.settings.themeColorOn = v; p.applyThemeColor(); await p.saveNow(); }));
+
+    const themeRow = new Setting(containerEl).setName('主题颜色 / Theme Color')
+      .setDesc('色卡或色环选择，或直接输入 #RRGGBB');
+    /* 色卡：预设 12 色 */
+    const swatches = ['#8FA394', '#6E8CA0', '#B07C72', '#C9A24A', '#8E7FB0', '#5F9E8F',
+      '#A8765C', '#6B7A99', '#A85C77', '#4F7A5B', '#9A8C6B', '#5C6B78'];
+    let hexInput = null, colorWheel = null, swatchEls = [];
+    (() => {
+      const holder = themeRow.controlEl.createDiv();
+      const palette = holder.createDiv();
+      palette.style.cssText = 'display:flex;flex-wrap:wrap;gap:5px;margin:2px 0 7px';
+      swatches.forEach((hex) => {
+        const b = palette.createEl('button');
+        b.setAttribute('title', hex);
+        b.style.cssText = 'width:22px;height:22px;border-radius:50%;border:2px solid transparent;background:' + hex + ';cursor:pointer;padding:0';
+        b.addEventListener('click', async () => {
+          p.settings.themeColor = hex; p.settings.themeColorOn = true;
+          p.applyThemeColor(); await p.saveNow();
+          if (hexInput) hexInput.setValue(hex);
+          if (colorWheel) colorWheel.value = hex.toLowerCase();
+          refreshSwatches();
+        });
+        swatchEls.push({ el: b, hex });
+      });
+      const refreshSwatches = () => swatchEls.forEach(({ el, hex }) => {
+        el.style.borderColor = (normalizeHex(p.settings.themeColor) || '').toUpperCase() === hex ? 'var(--text-normal)' : 'transparent';
+      });
+      refreshSwatches();
+      const cw = holder.createEl('input');
+      colorWheel = cw;
+      cw.type = 'color';
+      cw.value = (normalizeHex(p.settings.themeColor) || '#8FA394').toLowerCase();
+      cw.style.cssText = 'width:42px;height:26px;vertical-align:middle;margin-right:8px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:5px;padding:1px;background:transparent';
+      cw.addEventListener('input', async () => {
+        const hx = cw.value.toUpperCase();
+        p.settings.themeColor = hx; p.settings.themeColorOn = true;
+        p.applyThemeColor();
+        if (hexInput) hexInput.setValue(hx);
+        refreshSwatches();
+      });
+      cw.addEventListener('change', async () => { await p.saveNow(); });
+    });
+    themeRow.addText((tx) => {
+      hexInput = tx;
+      tx.setPlaceholder('#RRGGBB').setValue(normalizeHex(p.settings.themeColor) || '#8FA394')
+        .onChange(async (v) => {
+          const hx = normalizeHex(v);
+          if (!hx) return;
+          p.settings.themeColor = hx; p.settings.themeColorOn = true;
+          p.applyThemeColor(); await p.saveNow();
+          if (colorWheel) colorWheel.value = hx.toLowerCase();
+        });
+    });
+    new Setting(containerEl).setName(t('恢复默认')).addButton((b) => b.setButtonText(t('恢复默认主题色'))
+      .onClick(async () => { p.settings.themeColor = '#8FA394'; p.applyThemeColor(); await p.saveNow(); this.display(); }));
 
     new Setting(containerEl).setName('正文目录').setDesc('只有该目录下的 Markdown 才计为章节与统计范围')
       .addText((t) => t.setValue(p.settings.folderBody).onChange(async (v) => { p.settings.folderBody = v; await p.saveNow(); await p.rescan(true); }));
@@ -4739,7 +5394,7 @@ class NSSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('灵感目录').setDesc('每条灵感独立存为该目录下的一个 md 笔记（原统一的 灵感.md 已弃用）')
       .addText((t) => t.setValue(p.settings.folderInspiration || '灵感').onChange(async (v) => { p.settings.folderInspiration = v || '灵感'; await p.saveNow(); }));
 
-    containerEl.createEl('h3', { text: '正文辅助' });
+    containerEl.createEl('h3', { text: t('正文辅助') });
     new Setting(containerEl).setName('对话高亮').setDesc('双引号 “…” 内的文字高亮')
       .addToggle((t) => t.setValue(p.settings.dialogueHighlight).onChange(async (v) => { p.settings.dialogueHighlight = v; p.entityVersion++; await p.saveNow(); }));
     new Setting(containerEl).setName('英文双引号').addToggle((t) => t.setValue(p.settings.dialogueEnglish).onChange(async (v) => { p.settings.dialogueEnglish = v; p.entityVersion++; await p.saveNow(); }));
@@ -4763,15 +5418,30 @@ class NSSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('里程碑步长（字）').setDesc('默认 300；每达到 300 的整数倍，在该行右侧标注')
       .addText((t) => t.setValue(String(p.settings.milestoneStep || 300)).onChange(async (v) => { const n = parseInt(v, 10); p.settings.milestoneStep = (n >= 100) ? n : 300; p.entityVersion++; await p.saveNow(); }));
 
+    /* ===== v2.14 正文排版 ===== */
+    containerEl.createEl('h3', { text: t('正文排版') });
+    new Setting(containerEl).setName('启用排版设置').setDesc('对正文编辑、阅读视图和专注模式同时生效；标题/列表/引用/代码块自动排除，不破坏 Markdown 结构')
+      .addToggle((t) => t.setValue(p.settings.typoEnabled !== false).onChange(async (v) => { p.settings.typoEnabled = v; p.applyTypo(); await p.saveNow(); }));
+    new Setting(containerEl).setName('行间距').setDesc('正文行高倍数，默认 1.9；中文小说建议 1.8~2.2')
+      .addSlider((t) => t.setLimits(1, 3, 0.05).setValue(clamp(Number(p.settings.typoLineHeight) || 1.9, 1, 3)).setDynamicTooltip().onChange(async (v) => { p.settings.typoLineHeight = v; p.applyTypo(); p.scheduleSave(); }));
+    new Setting(containerEl).setName('字间距').setDesc('字符之间的额外距离（em），0 为默认；想要疏朗感可试 0.05~0.1')
+      .addSlider((t) => t.setLimits(0, 0.3, 0.01).setValue(clamp(Number(p.settings.typoLetterSpacing) || 0, 0, 0.3)).setDynamicTooltip().onChange(async (v) => { p.settings.typoLetterSpacing = v; p.applyTypo(); p.scheduleSave(); }));
+    new Setting(containerEl).setName('首行缩进').setDesc('每个段落首行缩进的 em 数，中文小说惯例 2em；0 为不缩进。仅作用于正文段落，标题/列表/引用不受影响')
+      .addSlider((t) => t.setLimits(0, 4, 0.5).setValue(clamp(Number(p.settings.typoIndent) || 0, 0, 4)).setDynamicTooltip().onChange(async (v) => { p.settings.typoIndent = v; p.applyTypo(); p.scheduleSave(); }));
+    new Setting(containerEl).setName('段间距（阅读视图）').setDesc('阅读视图里段落之间的额外间距（px）；编辑视图由空行自然控制，不受此项影响')
+      .addSlider((t) => t.setLimits(0, 48, 2).setValue(clamp(Number(p.settings.typoParaGap) || 0, 0, 48)).setDynamicTooltip().onChange(async (v) => { p.settings.typoParaGap = v; p.applyTypo(); p.scheduleSave(); }));
+    new Setting(containerEl).setName('正文字号').setDesc('0 = 跟随 Obsidian「设置→外观→字号」；12~28px。字号变化后若行高显示不齐，切换一次文件即可恢复')
+      .addSlider((t) => t.setLimits(0, 28, 1).setValue(clamp(Number(p.settings.typoFontSize) || 0, 0, 28)).setDynamicTooltip().onChange(async (v) => { p.settings.typoFontSize = v; p.applyTypo(); p.scheduleSave(); }));
+
     /* ===== 设定笔记出场章节统计（保留） ===== */
-    containerEl.createEl('h3', { text: '设定笔记统计' });
+    containerEl.createEl('h3', { text: t('设定笔记统计') });
     new Setting(containerEl).setName('设定笔记自动统计出场章节').setDesc('每个设定的 md 笔记末尾自动生成「📍 出场章节」表格：出场次数 + 章节链接（点击跳转），随正文修改自动刷新')
       .addToggle((t) => t.setValue(p.settings.appearSync !== false).onChange(async (v) => { p.settings.appearSync = v; await p.saveNow(); if (v) await p.syncEntityAppearances(); }));
     new Setting(containerEl).setName('立即刷新出场章节统计').setDesc('手动触发一次全部设定笔记的出场章节表格重建')
-      .addButton((b) => b.setButtonText('刷新').onClick(async () => { await p.syncEntityAppearances(); new Notice('出场章节统计已更新'); }));
+      .addButton((b) => b.setButtonText('刷新').onClick(async () => { await p.syncEntityAppearances(); new Notice(t('出场章节统计已更新')); }));
 
     /* ===== v2.4 三轴独立开关 ===== */
-    containerEl.createEl('h3', { text: '时间 / 空间 / 情绪线' });
+    containerEl.createEl('h3', { text: t('时间 / 空间 / 情绪线') });
     const axesDesc = containerEl.createDiv();
     axesDesc.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:10px';
     axesDesc.textContent = '三类线各自可开可关、任意组合：可只显示时间线、只显示空间线、只显示情绪线，或全部对照。每条线都能重命名、建多条、绑定人物/情节/设定。';
@@ -4788,7 +5458,7 @@ class NSSettingTab extends PluginSettingTab {
     });
 
     /* ===== v2.1 码字 / 目标 / 专注 ===== */
-    containerEl.createEl('h3', { text: '码字目标与进度条' });
+    containerEl.createEl('h3', { text: t('码字目标与进度条') });
     new Setting(containerEl).setName('每章默认目标字数').setDesc('新建章节默认目标；单章可在目录点字数单独设定（覆盖此值）')
       .addText((t) => t.setValue(String(p.settings.chapterTarget || DEFAULT_CHAPTER_TARGET)).onChange(async (v) => {
         p.settings.chapterTarget = parseInt(v, 10) || DEFAULT_CHAPTER_TARGET; await p.saveNow(); p.refreshProgressBar();
@@ -4798,8 +5468,21 @@ class NSSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('码字速度统计窗口(秒)').setDesc('实时速度 = 最近 N 秒码字数换算为字/分钟')
       .addText((t) => t.setValue(String(p.settings.paceWindow || 60)).onChange(async (v) => { p.settings.paceWindow = parseInt(v, 10) || 60; await p.saveNow(); }));
 
-    containerEl.createEl('h3', { text: '番茄钟 / 专注模式' });
+    containerEl.createEl('h3', { text: t('番茄钟 / 专注模式') });
     const minClamp = (v, d) => { const n = parseInt(v, 10); return (n >= 1 && n <= 600) ? n : d; };
+    /* v2.17：番茄钟与专注模式已合并为「专注写作」入口；写作场景 = 壁纸/音效/打字模式打包 */
+    new Setting(containerEl).setName('写作场景 · 默认模式').setDesc('侧栏「专注写作」弹窗打开时默认选中 番茄钟 还是 自由专注（弹窗内可随时切换）')
+      .addDropdown((d) => d.addOption('pomodoro', '🍅 番茄钟').addOption('focus', '🎯 自由专注').setValue(p.settings.focusModeDefault || 'pomodoro')
+        .onChange(async (v) => { p.settings.focusModeDefault = v; await p.saveNow(); }));
+    /* 写作场景管理：预设只读展示；自定义可删 */
+    const scnNote = containerEl.createDiv();
+    scnNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin:6px 0';
+    scnNote.textContent = '内置场景：' + SCENE_PRESETS.map((s) => s.name).join(' / ') + '。自定义场景：在「专注写作」弹窗里调好壁纸/音效后点「＋ 存为场景」，即可一键切换。';
+    (p.settings.customScenes || []).forEach((s) => {
+      const wp = FOCUS_WALLPAPERS.find((w) => w.id === s.wallpaper);
+      new Setting(containerEl).setName('🎬 ' + s.name).setDesc('自定义场景 · 壁纸：' + (wp ? wp.name : s.wallpaper) + ' · 背景音：' + s.sound + ' · 打字模式：' + (s.typingMode ? '开' : '关'))
+        .addButton((b) => b.setButtonText('删除').onClick(async () => { await p.deleteScene(s.id); this.display(); }));
+    });
     new Setting(containerEl).setName('番茄钟专注(分)').setDesc('任意 1-600 分钟，例如输 5')
       .addText((t) => t.setValue(String(p.settings.pomodoroWork)).onChange(async (v) => { p.settings.pomodoroWork = minClamp(v, 25); await p.saveNow(); }));
     new Setting(containerEl).setName('番茄钟短休(分)').addText((t) => t.setValue(String(p.settings.pomodoroBreak)).onChange(async (v) => { p.settings.pomodoroBreak = minClamp(v, 5); await p.saveNow(); }));
@@ -4827,43 +5510,116 @@ class NSSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('设定文件存放方式').setDesc('设定按大类分门别类存放为 设定/<大类>/<名称>.md，6 大类各有独立子文件夹；大类与类型同时写在文件 frontmatter（nws_group / nws_type），正文按模板补充。已有的扁平文件会在加载时自动归入对应子文件夹。');
 
-    containerEl.createEl('h3', { text: '设定库分类（6 大类 + 独立）' });
+    containerEl.createEl('h3', { text: t('设定库分类（6 大类 + 独立）') });
     const groupNote = containerEl.createDiv();
     groupNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.7;margin-bottom:8px';
     groupNote.innerHTML = '每条设定先归入一个大类，再选大类下的小库；每个库都有专属模板。无法归类者归入「独立」。'
       + ENTITY_GROUPS.map((g) => '<br>· <b>' + g.emoji + ' ' + g.name + '</b>：' + g.libs.join(' / ')).join('');
 
-    containerEl.createEl('h3', { text: '小库默认颜色（正文彩色加粗用）' });
+    containerEl.createEl('h3', { text: t('小库默认颜色（正文彩色加粗用）') });
     const typeNote = containerEl.createDiv();
     typeNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:6px';
     typeNote.textContent = '小库默认色；在「新建设定 / 更换高亮颜色」里也可对单条设定选「无颜色（加粗+下划线）」。';
-    p.data.entityTypes.forEach((t) => {
-      const row = new Setting(containerEl).setName(typeEmoji(t) + ' ' + t);
+    /* v2.16.1：正文快捷设定总开关——关闭后右键只保留一个「设为设定（自定义）」入口 */
+    new Setting(containerEl).setName(t('正文快捷设定（选中文字设为…）'))
+      .setDesc(t('总开关：码字时选中文字→右键「设为XX」快捷项。关闭后仅保留「设为设定（自定义）」入口；命令面板的快捷命令需重启 Obsidian 后同步'))
+      .addToggle((tg) => tg.setValue(p.settings.quickClassifyOn !== false)
+        .onChange(async (v) => {
+          p.settings.quickClassifyOn = !!v;
+          await p.saveNow();
+          new Notice(v ? t('已开启：右键菜单即时生效') : t('已关闭：右键仅保留「设为设定（自定义）」'));
+        }));
+    /* v2.16.3：两级归类菜单（大类▸小库 + 自定义入口）开关，默认隐藏 */
+    new Setting(containerEl).setName(t('完整归类菜单（大类 ▸ 小库 + 自定义入口）'))
+      .setDesc(t('默认关闭：右键只显示勾选的快捷项。开启后右键追加「设为设定 · 大类 ▸ 小库」两级菜单与「设为设定（自定义）」入口'))
+      .addToggle((tg) => tg.setValue(p.settings.groupClassifyOn === true)
+        .onChange(async (v) => {
+          p.settings.groupClassifyOn = !!v;
+          await p.saveNow();
+          new Notice(v ? t('已开启：右键菜单即时生效') : t('已关闭：右键仅保留勾选的快捷项'));
+        }));
+    /* v2.16：每个类型行末尾加「正文快捷显示」勾选，决定码字选中文字时是否出现在快速分类（默认仅 人物/情节/伏笔） */
+    const quickNote = containerEl.createDiv();
+    quickNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
+    quickNote.textContent = '☑「正文快捷显示」= 码字时选中文字→右键可直接设为该类型。默认只勾选 人物 / 情节 / 伏笔；还可在下方「自定义快捷项」添加自己的常用入口。';
+    p.data.entityTypes.forEach((tp) => {
+      const row = new Setting(containerEl).setName(typeEmoji(tp) + ' ' + tp);
       PALETTE_NAMES.forEach((cn, ci) => {
         row.addButton((b) => {
-          b.setTooltip(t + ' → ' + cn + '色');
-          b.setButtonText(p.typeColor(t) === ci ? '●' : '○');
-          b.onClick(async () => { p.data.typeColors[t] = ci; p.entityVersion++; await p.saveNow(); this.display(); });
+          b.setTooltip(tp + ' → ' + cn + '色');
+          b.setButtonText(p.typeColor(tp) === ci ? '●' : '○');
+          b.onClick(async () => { p.data.typeColors[tp] = ci; p.entityVersion++; await p.saveNow(); this.display(); });
         });
       });
+      /* 快捷显示勾选框（放在颜色按钮之后） */
+      row.addToggle((tg) => tg.setValue(p.isQuickType(tp))
+        .setTooltip('正文快捷显示 / Show in quick classify')
+        .onChange(async (v) => {
+          if (!p.settings.typeQuick) p.settings.typeQuick = {};
+          p.settings.typeQuick[tp] = v;
+          await p.saveNow();
+        }));
     });
-    new Setting(containerEl).setName('新增设定类型').addText((t) => t.setPlaceholder('如：情绪')
-      .addButton((b) => b.setButtonText('添加').onClick(async () => {
-        const v = t.getValue().trim();
-        if (v && p.data.entityTypes.indexOf(v) < 0) { p.data.entityTypes.push(v); p.data.typeColors[v] = 2; await p.saveNow(); this.display(); }
-      })));
+    /* v2.16.2：自定义快捷项（正文选中→右键「设为…」的额外入口；名称可自定义，归属任一小库） */
+    containerEl.createEl('h3', { text: t('自定义快捷项（正文选中文字 → 右键设为）') });
+    const custNote = containerEl.createDiv();
+    custNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
+    custNote.textContent = '默认快捷项仅 人物 / 情节 / 伏笔（由上方「正文快捷显示」勾选控制）；在此可添加自己的常用项，⭐ 标记，右键菜单即时生效，命令面板需重启同步。';
+    const custAdd = new Setting(containerEl).setName(t('添加自定义快捷项'));
+    let nameComp = null, typeComp = null;
+    custAdd.addText((tx) => { nameComp = tx; tx.setPlaceholder(t('显示名，如：情绪爆点')); });
+    custAdd.addDropdown((dd) => {
+      dd.addOptions(Object.fromEntries(p.data.entityTypes.map((tp) => [tp, typeEmoji(tp) + ' ' + tp])));
+      dd.setValue('情绪');
+      typeComp = dd;
+    });
+    custAdd.addButton((b) => b.setButtonText(t('添加')).onClick(async () => {
+      const name = nameComp ? String(nameComp.getValue() || '').trim() : '';
+      const type = typeComp ? String(typeComp.getValue() || '') : '';
+      if (!name) { new Notice(t('请先填写显示名')); return; }
+      if (!type || (p.data.entityTypes.indexOf(type) < 0)) { new Notice(t('归属类型无效')); return; }
+      if (!Array.isArray(p.settings.quickCustom)) p.settings.quickCustom = [];
+      if (p.settings.quickCustom.some((c) => c && c.name === name)) { new Notice(t('同名快捷项已存在')); return; }
+      p.settings.quickCustom.push({ name, type });
+      await p.saveNow();
+      new Notice(t('已添加：') + '⭐ ' + name + ' → ' + type);
+      this.display();
+    }));
+    (Array.isArray(p.settings.quickCustom) ? p.settings.quickCustom : []).forEach((c, ci) => {
+      new Setting(containerEl).setName('⭐ ' + (c.name || c.type))
+        .setDesc(typeEmoji(c.type) + ' ' + c.type + ' → ' + groupOfLib(c.type))
+        .addButton((b) => b.setButtonText(t('删除')).onClick(async () => {
+          p.settings.quickCustom.splice(ci, 1);
+          await p.saveNow();
+          this.display();
+        }));
+    });
 
-    containerEl.createEl('h3', { text: '大纲类型与模板' });
+    const etRow = new Setting(containerEl).setName(t('新增设定类型'));
+    let etText = null;
+    etRow.addText((tx) => { etText = tx; tx.setPlaceholder(t('如：情绪')); });
+    etRow.addButton((b) => b.setButtonText(t('添加')).onClick(async () => {
+      const v = etText ? etText.getValue().trim() : '';
+      if (v && p.data.entityTypes.indexOf(v) < 0) { p.data.entityTypes.push(v); p.data.typeColors[v] = 2; await p.saveNow(); this.display(); }
+    }));
+
+    containerEl.createEl('h3', { text: t('大纲类型与模板') });
     const otNote = containerEl.createDiv();
     otNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.7;margin-bottom:8px';
     otNote.innerHTML = '每种大纲类型对应一套模板骨架，新建时写入同名 md 笔记，按模板补充内容：'
       + Object.keys(OUTLINE_TEMPLATES).map((k) => '<br>· <b>' + outlineEmoji(k) + ' ' + k + '</b>：' + OUTLINE_TEMPLATES[k].fields.join(' / ')).join('');
-    new Setting(containerEl).setName('新增大纲类型').setDesc('新类型沿用「自定义」模板骨架（说明/要点/关联对象/备注）')
-      .addText((t) => t.setPlaceholder('如：冲突')
-      .addButton((b) => b.setButtonText('添加').onClick(async () => {
-        const v = t.getValue().trim();
-        if (v && p.data.outlineTypes.indexOf(v) < 0) { p.data.outlineTypes.push(v); await p.saveNow(); this.display(); }
-      })));
+    const otRow = new Setting(containerEl).setName(t('新增大纲类型')).setDesc(t('新类型沿用「自定义」模板骨架（说明/要点/关联对象/备注）'));
+    let otText = null;
+    otRow.addText((tx) => { otText = tx; tx.setPlaceholder(t('如：冲突')); });
+    otRow.addButton((b) => b.setButtonText(t('添加')).onClick(async () => {
+      const v = otText ? otText.getValue().trim() : '';
+      if (v && p.data.outlineTypes.indexOf(v) < 0) { p.data.outlineTypes.push(v); await p.saveNow(); this.display(); }
+    }));
+
+    /* ===== v2.15 扩展功能设置 ===== */
+    if (FEATURES && typeof FEATURES.appendSettings === 'function') FEATURES.appendSettings(containerEl, p);
+    /* v2.16：英文界面下翻译整页文案（DOM 后处理，不影响输入框的值） */
+    trNode(containerEl);
   }
 }
 

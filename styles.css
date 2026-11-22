@@ -345,7 +345,7 @@ body.nws-focus-on.theme-light .cm-content, body.nws-focus-on.theme-light .cm-lin
   text-shadow: none;
 }
 
-/* ===== v2.8全屏专注 ===== */
+/* ===== v2.8 禅模式：全屏专注 ===== */
 body.nws-focus-zen .status-bar { display: none; }
 body.nws-focus-zen .workspace-leaf-content[data-type="markdown"] { --file-line-width: 44em; }
 body.nws-focus-zen .workspace-split.mod-root .workspace-leaf:not(.mod-active) { opacity: .35; transition: opacity .3s; }
@@ -516,3 +516,129 @@ select.nws-status-sel.s3 { color: #4c7a52; }
 .nws-annot-table tr[data-aid] { cursor: pointer; }
 .nws-annot-table tr[data-aid]:hover { background: var(--background-modifier-hover); }
 .nws-annot-table .ops { white-space: nowrap; }
+
+/* ===== v2.15 悬浮符号栏 ===== */
+.nws-symbar {
+  position: fixed; right: 28px; bottom: 28px; z-index: 90;
+  width: 230px; max-height: 60vh; overflow: hidden;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22);
+  font-size: 12px;
+}
+.nws-symbar.dragging { opacity: .85; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+.nws-symbar-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; cursor: grab;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  user-select: none;
+}
+.nws-symbar-grip { color: var(--text-faint); letter-spacing: -3px; font-size: 13px; }
+.nws-symbar-title { flex: 1; font-weight: 600; color: var(--text-normal); }
+.nws-symbar-x {
+  border: none; background: transparent; color: var(--text-muted);
+  cursor: pointer; width: 18px; height: 18px; line-height: 16px; border-radius: 4px; padding: 0;
+}
+.nws-symbar-x:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.nws-symbar-body { max-height: calc(60vh - 34px); overflow-y: auto; padding: 8px 10px 10px; }
+.nws-symbar.compact .nws-symbar-body { display: none; }
+.nws-symgroup { margin-bottom: 8px; }
+.nws-symlabel { color: var(--text-faint); font-size: 10px; margin-bottom: 4px; }
+.nws-symchars { display: flex; flex-wrap: wrap; gap: 3px; }
+.nws-sym {
+  min-width: 26px; height: 26px; padding: 0 4px;
+  background: var(--background-secondary); color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border); border-radius: 5px;
+  cursor: pointer; font-size: 13px; line-height: 1;
+}
+.nws-sym:hover { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
+
+/* ===== v2.15 版本历史 / 草稿恢复 ===== */
+.nws-vsel { width: 100%; margin-top: 8px; }
+.nws-ver-list { padding: 4px 8px 20px; }
+.nws-ver-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--nws-line); font-size: 12px; }
+.nws-ver-time { color: var(--text-muted); min-width: 118px; }
+.nws-ver-reason { flex: 1; }
+.nws-ver-len { color: var(--text-faint); }
+.nws-diff { font-family: var(--font-monospace); font-size: 11px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  max-height: 50vh; overflow: auto; padding: 8px; background: var(--background-secondary); border-radius: 6px; }
+.nws-diff-add { color: var(--text-success); background: rgba(46,160,67,.10); }
+.nws-diff-del { color: var(--text-error); background: rgba(198,40,40,.10); }
+.nws-recover-diff { max-height: 220px; overflow: auto; font-size: 11px; }
+
+/* ===== v2.15 全局搜索 / 素材库 / 发布复盘 ===== */
+.nws-search-input { flex: 1; min-width: 180px; }
+.nws-scope { width: 90px; }
+.nws-savedfilters, .nws-taglist, .nws-bulkbar { margin: 6px 0; font-size: 11px; color: var(--text-muted); }
+.nws-fchip, .nws-tagchip { display: inline-block; padding: 1px 7px; margin: 1px 3px 1px 0; border-radius: 9px; font-size: 10px;
+  background: color-mix(in srgb, var(--tagc, var(--interactive-accent)) 18%, transparent);
+  color: var(--tagc, var(--interactive-accent)); border: 1px solid color-mix(in srgb, var(--tagc, var(--interactive-accent)) 35%, transparent); }
+.nws-tag-del { border: none; background: none; color: var(--text-faint); cursor: pointer; }
+.nws-bulktag { width: 150px; }
+.nws-search-list { padding: 6px 10px 24px; }
+.nws-search-row { display: flex; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--nws-line); }
+.nws-search-main { flex: 1; min-width: 0; }
+.nws-search-title { font-weight: 600; cursor: pointer; color: var(--text-normal); }
+.nws-search-title:hover { color: var(--interactive-accent); }
+.nws-search-snip { font-size: 11px; color: var(--text-muted); margin: 3px 0; line-height: 1.5; }
+.nws-hitline { color: var(--interactive-accent); }
+.nws-search-meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.nws-mini { font-size: 10px; color: var(--text-faint); }
+.nws-linkbtn { border: none; background: none; color: var(--interactive-accent); cursor: pointer; font-size: 10px; }
+.nws-search-snip mark { background: rgba(255,200,60,.35); color: inherit; border-radius: 2px; }
+.nws-rel-row { padding: 6px 0; border-bottom: 1px solid var(--nws-line); }
+
+.nws-mat-list, .nws-topic-list { padding: 6px 10px; }
+.nws-mat-row { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--nws-line); }
+.nws-mat-kind { flex: 0 0 40px; font-size: 10px; color: var(--text-faint); padding-top: 3px; }
+.nws-mat-main { flex: 1; min-width: 0; }
+.nws-mat-content { line-height: 1.6; white-space: pre-wrap; }
+.nws-topic-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--nws-line); font-size: 12px; }
+.nws-topic-row span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nws-topic-row select { width: 84px; }
+
+.nws-pre-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--nws-line); font-size: 12px; }
+.nws-pre-row b { min-width: 52px; }
+.nws-pre-row span:last-child { flex: 1; color: var(--text-muted); }
+.nws-pre-level { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
+.nws-pre-row.level-ok .nws-pre-level { color: var(--text-success); background: rgba(46,160,67,.12); }
+.nws-pre-row.level-warn .nws-pre-level { color: var(--text-warning); background: rgba(230,150,30,.14); }
+.nws-pre-row.level-fail .nws-pre-level { color: var(--text-error); background: rgba(198,40,40,.12); }
+
+.nws-metric-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; padding: 10px; }
+.nws-metric-chart { width: 100%; height: 150px; background: var(--background-secondary); border-radius: 8px; }
+.nws-dist-row { display: flex; align-items: center; gap: 8px; font-size: 11px; margin: 5px 0; }
+.nws-dist-bar { flex: 1; height: 8px; background: var(--background-secondary); border-radius: 4px; overflow: hidden; }
+.nws-dist-bar i { display: block; height: 100%; background: var(--interactive-accent); }
+.nws-insight { margin: 8px 10px 16px; padding: 10px 12px; background: var(--background-secondary); border-radius: 8px; line-height: 1.7; font-size: 12px; }
+.nws-metric-table { padding: 0 10px 24px; }
+.nws-metric-row, .nws-sess-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 4px; border-bottom: 1px solid var(--nws-line); font-size: 11px; }
+.nws-sess-list { padding: 0 10px 24px; }
+
+/* ===== v2.16 主题色 / 语言切换 / 快捷分类勾选 ===== */
+/* 主题色注入在 body 上覆盖 --nws-accent 系列；这里补充派生的 hover 与浅底用法 */
+.nws-btn.pri:hover { background: var(--nws-accent-hover, var(--nws-accent)); }
+.nws-fbtn.on, .nws-fbtn.active { background: var(--nws-accent-soft, var(--nws-card2)); color: var(--nws-accent-soft-ink, var(--nws-ink)); border-color: var(--nws-accent); }
+.nws-tagchip, .nws-tag.g { background: var(--nws-accent-soft, #e7efe6); color: var(--nws-accent-soft-ink, #5c7a63); }
+.setting-item input[type="color"] { accent-color: var(--nws-accent); }
+/* 快捷分类勾选行：颜色圆点与勾选框对齐 */
+.setting-item .nws-quick-toggle { margin-left: 6px; }
+
+/* ===== v2.17 时空矩阵 / 时空事件表 ===== */
+.nws-mx-wrap { overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.nws-matrix { border-collapse: collapse; width: 100%; font-size: 12px; }
+.nws-matrix th, .nws-matrix td { border: 1px solid var(--background-modifier-border); padding: 4px 6px; vertical-align: top; }
+.nws-matrix thead th { background: var(--background-secondary); font-weight: 600; min-width: 110px; }
+.nws-mx-corner { min-width: 130px !important; color: var(--text-muted); font-size: 11px; }
+.nws-mx-col { font-weight: 600; }
+.nws-mx-col i, .nws-mx-row i { display: block; font-weight: 400; font-style: normal; font-size: 10px; color: var(--text-muted); }
+.nws-mx-rowhead { background: var(--background-secondary); min-width: 130px; text-align: left; }
+.nws-mx-row { font-weight: 600; }
+.nws-mx-none { color: var(--text-faint); font-size: 11px; font-weight: 400; }
+.nws-mx-cell { min-width: 110px; min-height: 44px; cursor: pointer; }
+.nws-mx-cell:hover { background: var(--background-modifier-hover); }
+.nws-mev { display: inline-block; background: var(--nws-accent-soft, #e7efe6); color: var(--nws-accent-soft-ink, #5c7a63); border-radius: 5px; padding: 2px 6px; margin: 2px 2px 0 0; font-size: 11px; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nws-mx-ops { white-space: nowrap; }
+.nws-matrix.nws-evt td { max-width: 260px; }
