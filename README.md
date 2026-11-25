@@ -1,6 +1,6 @@
 # Novel Writing
 
-[![version](https://img.shields.io/badge/version-2.17.1-blue)](https://github.com/vrphu/Novel-Writing/tags)
+[![version](https://img.shields.io/badge/version-2.17.2-blue)](https://github.com/vrphu/Novel-Writing/tags)
 [![Obsidian](https://img.shields.io/badge/Obsidian-%E2%89%A51.5.0-7c3aed)](https://obsidian.md)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -10,6 +10,13 @@
 仓库地址：https://github.com/vrphu/Novel-Writing
 
 ---
+
+## v2.17.2 更新
+
+- 专注写作新增正计时秒表。
+- 时间线与空间线可组成时空矩阵，支持自定义角度线。
+- 情节增加主线、支线、暗线，以及冲突链、转折点、节拍表。
+- 章节正文顶部增加进度卡，显示已写字数与目标，可点击修改；悬浮符号栏可拖动。
 
 ## 功能总览
 

@@ -1,4 +1,4 @@
-/* 小说写作台 —— 莫兰迪低饱和视觉，变量挂 body，兼容明暗主题 */
+/* 小说写作—— 莫兰迪低饱和视觉，变量挂 body，兼容明暗主题 */
 body {
   --nws-ink: var(--text-normal, #3a3a38);
   --nws-ink2: var(--text-muted, #8a877f);
@@ -40,6 +40,18 @@ body {
 .nws-chap:hover { background: var(--nws-card2); }
 .nws-chap .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nws-chap .w { font: 10px var(--mono, monospace); color: var(--nws-ink2); }
+
+/* 正文顶部进度条：绑定内容行 */
+#nws-progress .nws-bar-nums { cursor: pointer; }
+#nws-progress .nws-bar-nums:hover { color: var(--nws-accent, #5c7a63); }
+#nws-progress .nws-bar-binds { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--nws-line); }
+#nws-progress .nws-bar-binds:empty { display: none; }
+#nws-progress .nws-bar-bind-label { font-size: 10px; color: var(--nws-ink2); flex: none; }
+#nws-progress .nws-bar-bind-chip { display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 9px; background: #eef3ee; color: #5c7a63; border: 1px solid #d3e2d4; cursor: pointer; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-dark #nws-progress .nws-bar-bind-chip { background: #2c3a2e; color: #a9c7ae; border-color: #3a4d3d; }
+#nws-progress .nws-bar-bind-chip:hover { border-color: var(--nws-accent, #5c7a63); }
+#nws-progress .nws-bar-bind-count { display: inline-block; margin-left: 3px; padding: 0 4px; border-radius: 8px; font: 10px var(--mono, monospace); font-weight: 600; background: #d9e7da; color: #3f6144; }
+.theme-dark #nws-progress .nws-bar-bind-count { background: #3a4d3d; color: #c3e0c8; }
 .nws-st { width: 7px; height: 7px; border-radius: 50%; background: #c9c5bc; flex: none; }
 .nws-st.s1 { background: #d2a271; }
 .nws-st.s2 { background: #86a0bd; }
@@ -206,6 +218,7 @@ body {
 .nws-lines > .nws-linecol { flex: 1 1 240px; min-width: 220px; max-width: 100%; }
 .nws-linecol { min-width: 0; border: 1px solid var(--nws-line); border-radius: 10px; padding: 4px 10px 10px; background: var(--background-primary); }
 .nws-linecol-h { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-weight: 600; font-size: 12px; padding: 8px 4px; border-bottom: 2px solid var(--nws-accent); margin-bottom: 8px; flex-wrap: wrap; }
+.nws-linecol.nws-line-custom .nws-linecol-h { border-bottom-color: #A797BE; }
 .nws-track-h { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .nws-track-emoji { font-size: 14px; }
 .nws-track-name { font-weight: 600; cursor: pointer; }
@@ -310,6 +323,26 @@ body.nws-focus-zen #nws-focus-hud:hover { opacity: 1; }
 #nws-progress .nws-bar-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 5px; color: var(--nws-ink2); font-variant-numeric: tabular-nums; }
 #nws-progress .nws-bar-name { font-weight: 600; color: var(--nws-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #nws-progress .nws-bar-nums { white-space: nowrap; }
+
+/* ===== v2.14+ 正文顶部章节进度卡（嵌在每章正文最上方） ===== */
+.nws-chapter-head { margin: 4px 24px 14px; padding: 12px 16px 11px; background: var(--nws-card, var(--background-primary)); border: 1px solid var(--nws-line); border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+.nws-chapter-head .nws-ch-head-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.nws-chapter-head .nws-ch-title { font-size: 14px; font-weight: 700; color: var(--nws-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nws-chapter-head .nws-ch-nums { font-size: 11px; color: var(--nws-ink2); white-space: nowrap; cursor: pointer; font-variant-numeric: tabular-nums; }
+.nws-chapter-head .nws-ch-nums:hover { color: var(--nws-accent, #5c7a63); }
+.nws-chapter-head .nws-ch-track { height: 6px; margin-top: 9px; border-radius: 4px; background: var(--nws-card2, #eceff0); overflow: hidden; }
+.nws-chapter-head .nws-ch-fill { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #8FAF95, #86A0BD, #A797BE, #D2A271); background-size: 200% 100%; animation: nws-bar-flow 4s linear infinite; transition: width .35s ease; }
+.nws-chapter-head .nws-ch-binds { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 9px; font-size: 11px; }
+.nws-chapter-head .nws-ch-binds:empty { display: none; }
+.nws-chapter-head .nws-ch-bind-label { color: var(--nws-ink2); flex: none; }
+.nws-chapter-head .nws-ch-bind-chip { display: inline-block; padding: 1px 8px; border-radius: 9px; background: #eef3ee; color: #5c7a63; border: 1px solid #d3e2d4; cursor: pointer; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.theme-dark .nws-chapter-head .nws-ch-bind-chip { background: #2c3a2e; color: #a9c7ae; border-color: #3a4d3d; }
+.nws-chapter-head .nws-ch-bind-chip:hover { border-color: var(--nws-accent, #5c7a63); }
+.nws-chapter-head .nws-ch-bind-count { display: inline-block; margin-left: 3px; padding: 0 4px; border-radius: 8px; font: 10px var(--mono, monospace); font-weight: 600; background: #d9e7da; color: #3f6144; }
+.theme-dark .nws-chapter-head .nws-ch-bind-count { background: #3a4d3d; color: #c3e0c8; }
+.nws-chapter-head .nws-ch-bind-hint { font-size: 11px; font-style: italic; color: var(--nws-ink2, var(--text-muted)); }
+.nws-chapter-head .nws-ch-bind-add { display: inline-block; padding: 1px 9px; border-radius: 9px; background: transparent; color: var(--nws-ink2); border: 1px dashed var(--nws-line); cursor: pointer; font-size: 11px; white-space: nowrap; }
+.nws-chapter-head .nws-ch-bind-add:hover { color: var(--nws-accent, #5c7a63); border-color: var(--nws-accent, #5c7a63); background: rgba(143,163,148,.10); }
 
 /* ===== v2.1 打字模式：当前段高亮 + 前后渐淡（v2.8 增强） ===== */
 .nws-tp-cur { background: rgba(143, 163, 148, .18); box-shadow: inset 3px 0 0 var(--nws-accent); transition: background .2s; }
@@ -517,7 +550,7 @@ select.nws-status-sel.s3 { color: #4c7a52; }
 .nws-annot-table tr[data-aid]:hover { background: var(--background-modifier-hover); }
 .nws-annot-table .ops { white-space: nowrap; }
 
-/* ===== v2.15 悬浮符号栏 ===== */
+/* ===== v2.14 悬浮符号栏 ===== */
 .nws-symbar {
   position: fixed; right: 28px; bottom: 28px; z-index: 90;
   width: 230px; max-height: 60vh; overflow: hidden;
@@ -555,7 +588,7 @@ select.nws-status-sel.s3 { color: #4c7a52; }
 }
 .nws-sym:hover { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
 
-/* ===== v2.15 版本历史 / 草稿恢复 ===== */
+/* ===== v2.14 版本历史 / 草稿恢复 ===== */
 .nws-vsel { width: 100%; margin-top: 8px; }
 .nws-ver-list { padding: 4px 8px 20px; }
 .nws-ver-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--nws-line); font-size: 12px; }
@@ -568,7 +601,7 @@ select.nws-status-sel.s3 { color: #4c7a52; }
 .nws-diff-del { color: var(--text-error); background: rgba(198,40,40,.10); }
 .nws-recover-diff { max-height: 220px; overflow: auto; font-size: 11px; }
 
-/* ===== v2.15 全局搜索 / 素材库 / 发布复盘 ===== */
+/* ===== v2.14 全局搜索 / 素材库 / 发布复盘 ===== */
 .nws-search-input { flex: 1; min-width: 180px; }
 .nws-scope { width: 90px; }
 .nws-savedfilters, .nws-taglist, .nws-bulkbar { margin: 6px 0; font-size: 11px; color: var(--text-muted); }
@@ -617,7 +650,7 @@ select.nws-status-sel.s3 { color: #4c7a52; }
 .nws-metric-row, .nws-sess-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 4px; border-bottom: 1px solid var(--nws-line); font-size: 11px; }
 .nws-sess-list { padding: 0 10px 24px; }
 
-/* ===== v2.16 主题色 / 语言切换 / 快捷分类勾选 ===== */
+/* ===== v2.14 主题色 / 语言切换 / 快捷分类勾选 ===== */
 /* 主题色注入在 body 上覆盖 --nws-accent 系列；这里补充派生的 hover 与浅底用法 */
 .nws-btn.pri:hover { background: var(--nws-accent-hover, var(--nws-accent)); }
 .nws-fbtn.on, .nws-fbtn.active { background: var(--nws-accent-soft, var(--nws-card2)); color: var(--nws-accent-soft-ink, var(--nws-ink)); border-color: var(--nws-accent); }
@@ -626,7 +659,7 @@ select.nws-status-sel.s3 { color: #4c7a52; }
 /* 快捷分类勾选行：颜色圆点与勾选框对齐 */
 .setting-item .nws-quick-toggle { margin-left: 6px; }
 
-/* ===== v2.17 时空矩阵 / 时空事件表 ===== */
+/* ===== v2.14 时空矩阵 / 时空事件表 ===== */
 .nws-mx-wrap { overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
 .nws-matrix { border-collapse: collapse; width: 100%; font-size: 12px; }
 .nws-matrix th, .nws-matrix td { border: 1px solid var(--background-modifier-border); padding: 4px 6px; vertical-align: top; }

@@ -1,12 +1,9 @@
-/* novel-writer-studio v2.15 扩展模块
- * 悬浮符号栏 / 版本历史 / 编辑器命令 / 全局搜索 / 素材库 / 导入导出 / 发布检查 / 发布复盘 / 会话统计
- * 主插件通过 require('./features') 加载；本文件不修改既有数据，只追加字段。
- */
+
 const obsidian = require('obsidian');
 const { Modal, ItemView, Notice, Setting, TFile, TFolder, MarkdownView } = obsidian;
-/* v2.16：i18n 翻译钩子，由主插件 applyLang 注入；未注入时原样返回 */
+
 let FT = (s) => s;
-/* v2.16.3：主插件注入的 DOM 翻译钩子（英文模式下渲染后翻译视图内容） */
+
 let trNodeFn = null;
 function setTranslator(fn, domFn) { FT = fn; if (typeof domFn === 'function') trNodeFn = domFn; }
 
@@ -92,7 +89,7 @@ function buildSymbolBar(plugin) {
   head.className = 'nws-symbar-head';
   const body = document.createElement('div');
   body.className = 'nws-symbar-body';
-  /* 文案渲染独立成函数（v2.16.5：语言切换已移除，仅初始化时渲染一次；按钮监听用委托） */
+  
   const renderTexts = () => {
     head.innerHTML = '<span class="nws-symbar-grip">⋮⋮</span><span class="nws-symbar-title">' + FT('快捷符号') + '</span>' +
       '<button class="nws-symbar-x" data-act="min" title="' + FT('收起/展开') + '">−</button><button class="nws-symbar-x" data-act="close" title="' + FT('关闭（可在设置里重新开启）') + '">×</button>';
@@ -287,7 +284,7 @@ class VersionView extends ItemView {
 function setView(view, html) {
   const c = view.contentEl || (view.containerEl && view.containerEl.querySelector('.view-content')) || view.containerEl;
   c.empty(); c.innerHTML = html;
-  /* v2.16.3：英文模式下每次渲染即翻译（走主插件注入的 trNode 钩子） */
+
   try { if (typeof trNodeFn === 'function') trNodeFn(c); } catch (e) {}
   return c;
 }

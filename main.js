@@ -5,16 +5,11 @@ const {
   Plugin, ItemView, Modal, Notice, Setting, PluginSettingTab,
   TFile, TFolder, normalizePath, MarkdownView
 } = obsidian;
-/* v2.15：扩展功能模块（悬浮符号栏/版本历史/编辑器命令/搜索/素材/导入导出/复盘/会话）。
-   容错加载：即使扩展模块缺失也不影响既有功能。 */
+
 let FEATURES = null;
 try { FEATURES = require('./features'); } catch (e) { console.error('[小说写作台] 扩展模块加载失败:', e); }
 
-/* ===== v3.0 根因修复：CM6 装饰 API 加载 =====
-   Obsidian 的 require('obsidian') 导出对象里【不含】Decoration/ViewPlugin/RangeSetBuilder
-   （已在 obsidian.asar 的 __export 表核实）。旧版靠它判定 HAS_CM=false，导致整条
-   正文装饰层（设定高亮/引号高亮/批注/里程碑/打字模式）从未注册 —— 这就是"设不了、
-   高亮不出来"的真正原因。正确做法：用 Obsidian 拦截的 require 直接取内部 @codemirror 模块。*/
+
 let Decoration = null, ViewPlugin = null, RangeSetBuilder = null;
 const cmLoadErrors = [];
 try {
@@ -63,7 +58,7 @@ const TRACK_AXES = [
   { key: 'time', name: '时间线', emoji: '⏳' },
   { key: 'space', name: '空间线', emoji: '🗺️' },
   { key: 'emotion', name: '情绪线', emoji: '💗' },
-  { key: 'custom', name: '自定义线', emoji: '🧵' }   /* v2.17：如视角线/道具线/信息线，可作为时空事件的附加维度 */
+  { key: 'custom', name: '自定义线', emoji: '🧵' }  
 ];
 /* 视角：时间/空间/情绪都可用；情绪视角有专属触发源字段 */
 const TRACK_VIEWS = [
@@ -86,7 +81,7 @@ function trackViewDef(k) { return TRACK_VIEWS.find((v) => v.key === k) || TRACK_
 const PALETTE = ['#C98B86', '#8FAF95', '#86A0BD', '#D2A271', '#D4BE76', '#A797BE'];
 const PALETTE_NAMES = ['红', '绿', '蓝', '橙', '黄', '紫'];
 /* v2.2：右键一级常用归类（用户最常点），直接平铺在右键菜单，不再藏进两级子菜单 */
-/* v2.16：正文码字时选中文字的快速分类——默认仅三类，其余类型可在设置页勾选显示 */
+/* v2.14：正文码字时选中文字的快速分类——默认仅三类，其余类型可在设置页勾选显示 */
 const DEFAULT_QUICK_TYPES = ['人物', '情节', '伏笔'];
 const QUICK_CLASSIFY = [
   { type: '伏笔', group: '剧情大纲+伏笔库', emoji: '🔖' },
@@ -205,11 +200,11 @@ const LIB_MIGRATE = { '角色': '人物', '情节': '剧情', '场景': '场景'
 /* 大纲类型（章节/情节/人物等，可自定义） */
 const DEFAULT_OUTLINE_TYPES = ['总纲', '卷纲', '章节', '情节', '人物', '背景', '场景', '伏笔', '时间线', '主题', '自定义'];
 
-/* v2.6.1：章节状态四选项（点目录里的状态标签循环切换）。旧值映射：空白→草稿、草稿→写作中、修订中→待修订、已完成/已定稿→已定稿 */
-const CH_STATUS = ['草稿', '写作中', '待修订', '已定稿'];
-const PLUGIN_VERSION = '2.17.1';
 
-/* v2.16.5：中英界面切换已移除，插件仅保留中文界面。t()/trNode 保留为直通桩以兼容既有调用点 */
+const CH_STATUS = ['草稿', '写作中', '待修订', '已定稿'];
+const PLUGIN_VERSION = '2.14';
+
+
 function t(s) { return s; }
 function trNode(node) { return node; }
 
@@ -251,8 +246,8 @@ const TYPING_SOUNDS = [
   { id: 'soft', name: '🤍 轻柔按键' },
   { id: 'type', name: '📜 打字机' },
 ];
-/* v2.17 写作场景：壁纸+背景音+打字音效+打字模式+全屏 的预设包。
-   预设场景只引用已有壁纸/音效 id；自定义场景存 settings.customScenes（用户在弹窗/设置页保存）。 */
+
+/* v2.17：写作场景预设——预设场景只引用已有壁纸/音效 id；自定义场景存 settings.customScenes（用户在弹窗/设置页保存）。 */
 const SCENE_PRESETS = [
   { id: 'scn_midnight', name: '🌙 深夜书房', wallpaper: 'midnight', sound: 'off', typeSound: 'soft', typingMode: true, fullscreen: true },
   { id: 'scn_rain', name: '🌧 雨夜写作', wallpaper: 'navy', sound: 'rain', typeSound: 'key', typingMode: true, fullscreen: true },
@@ -327,7 +322,7 @@ const DEFAULT_SETTINGS = {
   typeSoundVolume: 0.35,               // 打字音效音量 0-1
   typingMode: false,                   // 打字模式：当前段高亮+前后渐淡
   typingRadius: 2,                     // 渐淡段数
-  /* v2.17：写作场景（番茄钟+专注模式合并入口） */
+
   customScenes: [],                    // 自定义写作场景 [{ id, name, wallpaper, sound, typeSound, typingMode, fullscreen }]
   focusScene: '',                      // 当前选中的场景 id（预设 scn_* / 自定义 scn_c*）；''=未选（沿用当前壁纸/音效设置）
   focusModeDefault: 'pomodoro',        // 专注写作弹窗默认模式 'pomodoro'|'focus'
@@ -339,13 +334,13 @@ const DEFAULT_SETTINGS = {
   milestoneMark: true,                 // 每 N 字在行右侧标注里程碑
   milestoneStep: 300,                  // 每 300 字在行右标注里程碑
   dailyGoal: 1000,                     // v2.13：日更目标字数（目标达成率统计）
-  /* v2.16：插件主题色 / 正文快捷分类 */
+
   themeColor: '#8FA394',               // 插件主题色（默认莫兰迪绿；覆盖 --nws-accent）
   themeColorOn: true,                  // 是否启用自定义主题色
   typeQuick: null,                     // 各小库类型是否在正文选中时出现在快捷分类；null=用默认三类
-  quickClassifyOn: true,               // v2.16.1：正文「选中文字设为设定」总开关（关闭后仅保留一个自定义入口）
-  quickCustom: [],                     // v2.16.2：自定义快捷项 [{ name, type }]，name 为菜单显示名，type 为归属小库
-  groupClassifyOn: false,              // v2.16.3：右键「设为设定 · 大类 ▸ 小库」两级归类与自定义入口；默认隐藏
+  quickClassifyOn: true,               // v2.14.1：正文「选中文字设为设定」总开关（关闭后仅保留一个自定义入口）
+  quickCustom: [],                     // v2.14.2：自定义快捷项 [{ name, type }]，name 为菜单显示名，type 为归属小库
+  groupClassifyOn: false,              // v2.14.3：右键「设为设定 · 大类 ▸ 小库」两级归类与自定义入口；默认隐藏
   /* v2.14：正文排版（行距/字距/首行缩进/段间距/字号，编辑+阅读+专注统一生效） */
   typoEnabled: true,                   // 排版总开关
   typoLineHeight: 1.9,                 // 行间距倍数（1~3）
@@ -361,7 +356,7 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sli
 function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function fmt(n) { return (n || 0).toLocaleString('en-US'); }
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-/* v2.16 颜色工具：HEX 校验 / 转 RGB / 相对亮度 / 混色 */
+
 function normalizeHex(v) {
   if (v == null) return null;
   let h = String(v).trim().replace(/^#/, '');
@@ -442,7 +437,7 @@ class NovelWriterStudio extends Plugin {
     if (this.settings.focusDim === 0.55) this.settings.focusDim = 0.32;
     /* v2.10 迁移：里程碑 500 → 300；仅当仍是旧默认值时改，尊重用户自定义值 */
     if (this.settings.milestoneStep === 500) this.settings.milestoneStep = 300;
-    /* v2.17：自定义写作场景清理（非数组/缺名称的丢弃；focusScene 指向不存在的场景则清空） */
+
     if (!Array.isArray(this.settings.customScenes)) this.settings.customScenes = [];
     this.settings.customScenes = this.settings.customScenes.filter((s) => s && s.id && s.name);
     if (this.settings.focusScene && !this.sceneById(this.settings.focusScene)) this.settings.focusScene = '';
@@ -498,7 +493,7 @@ class NovelWriterStudio extends Plugin {
       console.error('[小说写作台] CM6 装饰层加载失败，正文高亮不可用。诊断：', cmLoadErrors.join(' | ') || '模块未导出装饰类');
     }
 
-    /* v2.16：ribbon 注册统一走 addRibbon，保存元素引用以便切语言即时更新 tooltip */
+  
     this._ribbonRefs = [];
     const addRibbon = (icon, title, fn) => {
       const el = this.addRibbonIcon(icon, t(title), fn);
@@ -513,7 +508,7 @@ class NovelWriterStudio extends Plugin {
     addRibbon('chart-no-axes-column', '写作台 · 数据中心', () => this.activateView(VIEW_STATS));
     addRibbon('sticky-note', '写作台 · 批注', () => this.activateView(VIEW_ANNOT));
     addRibbon('search', '写作台 · 查找替换', () => new FindReplaceModal(this.app, this).open());
-    /* v2.17：番茄钟与专注模式合并为一个入口（弹窗内切换模式、选写作场景） */
+ 
     addRibbon('timer', '写作台 · 专注写作（番茄钟/自由专注/写作场景）', () => new FocusModal(this.app, this).open());
 
     this.buildHover();
@@ -551,7 +546,8 @@ class NovelWriterStudio extends Plugin {
     this.clearFocusWallpaper();
     /* v2.14：卸载时移除排版样式注入 */
     if (this._typoStyle) { try { this._typoStyle.remove(); } catch (e) {} this._typoStyle = null; }
-    /* v2.16：卸载时移除主题色样式注入（v2.16.5：语言切换已移除） */
+   
+
     if (this._themeStyle) { try { this._themeStyle.remove(); } catch (e) {} this._themeStyle = null; }
     try { document.body.classList.remove('nws-typo-on'); } catch (e) {}
     if (this.pomodoro && this.pomodoro.timer) clearInterval(this.pomodoro.timer);
@@ -608,7 +604,7 @@ class NovelWriterStudio extends Plugin {
     } catch (e) { console.error('[小说写作台] 应用排版失败:', e); }
   }
 
-  /* ---------- v2.16 插件主题色 ---------- */
+
   /* 用独立 style 标签覆盖 --nws-accent 系列；只作用于插件自身的 CSS 变量，不改 Obsidian 主题 */
   applyThemeColor() {
     try {
@@ -638,13 +634,13 @@ class NovelWriterStudio extends Plugin {
     } catch (e) { console.error('[小说写作台] 应用主题色失败:', e); }
   }
 
-  /* ---------- v2.16 正文快捷分类（按勾选动态；v2.16.1 增加总开关；v2.16.2 支持自定义快捷项） ---------- */
   quickClassifyTypes() {
     if (!this.settings.quickClassifyOn) return [];   // 总开关关闭：右键/命令均不出现快捷项
     const tq = this.settings.typeQuick;
     const list = QUICK_CLASSIFY.filter((q) => tq ? !!tq[q.type] : DEFAULT_QUICK_TYPES.indexOf(q.type) >= 0)
       .map((q) => ({ type: q.type, group: q.group, emoji: q.emoji, name: q.type }));
-    /* v2.16.2：自定义快捷项（用户在设置页添加；name 可自定义，type 必须是已有小库以继承颜色/模板/归类） */
+ 
+
     const custom = Array.isArray(this.settings.quickCustom) ? this.settings.quickCustom : [];
     custom.forEach((c) => {
       if (!c || !c.type) return;
@@ -775,7 +771,7 @@ class NovelWriterStudio extends Plugin {
       });
       d.schemaVersion = 13;
     }
-    /* v2.16：正文快捷分类勾选表。默认只勾选 人物/情节/伏笔；已有用户保持旧行为不强制改写 */
+
     {
       const tq = (d.settings && d.settings.typeQuick) || null;
       const map = Object.create(null);
@@ -784,7 +780,7 @@ class NovelWriterStudio extends Plugin {
       DEFAULT_QUICK_TYPES.forEach((tp) => { if (map[tp] == null) map[tp] = tq ? !!tq[tp] : true; });
       if (d.settings) d.settings.typeQuick = map;
     }
-    /* v2.16.2：自定义快捷项兜底（数组，元素含 name/type，过滤非法项） */
+    
     if (d.settings) {
       if (!Array.isArray(d.settings.quickCustom)) d.settings.quickCustom = [];
       d.settings.quickCustom = d.settings.quickCustom.filter((c) => c && c.type && String(c.name || '').length <= 30);
@@ -806,7 +802,7 @@ class NovelWriterStudio extends Plugin {
     d.outlines.forEach((o) => { o.bindings = o.bindings || []; o.color = o.color == null ? 3 : o.color; o.tags = o.tags || []; o.file = o.file || ''; });
     d.plots.forEach((p) => {
       p.stages = p.stages || {}; p.roles = p.roles || []; p.tags = p.tags || []; p.chapters = p.chapters || [];
-      /* v2.17：情节控制字段（主线/支线/暗线 · 所属主线 · 冲突链 · 转折点 · 节拍表 · 伏笔埋下/回收节奏） */
+
       p.lineType = ['主线', '支线', '暗线'].indexOf(p.lineType) >= 0 ? p.lineType : '主线';
       p.parentId = p.parentId || '';
       p.beats = Array.isArray(p.beats) ? p.beats.filter((b) => b && (b.name || b.desc)) : [];
@@ -817,7 +813,7 @@ class NovelWriterStudio extends Plugin {
     });
     d.lineNodes.forEach((n) => { n.bindings = n.bindings || []; });
     d.tracks.forEach((t) => { t.bindings = t.bindings || []; });
-    /* v2.17：时空事件（时间×空间映射 + 自定义维度），默认空数组 */
+
     d.stEvents = Array.isArray(d.stEvents) ? d.stEvents.filter((e) => e && e.id) : [];
     d.settings.linesViewMode = ['axes', 'matrix', 'table'].indexOf(d.settings.linesViewMode) >= 0 ? d.settings.linesViewMode : 'axes';
     (d.notes || []).forEach((n) => { n.bindings = n.bindings || []; n.status = n.status || '待定'; });
@@ -1308,17 +1304,64 @@ class NovelWriterStudio extends Plugin {
     const t = Number(m && m.target);
     return (t && t > 0) ? t : (Number(this.settings.chapterTarget) || DEFAULT_CHAPTER_TARGET);
   }
+  /* ========== v2.14+：章节进度 / 绑定反查（正文顶部进度条使用） ========== */
+  /* 单章进度：current 显式传入则用之，否则 liveText → wordCache → 0；目标走 targetOf。
+     pct 封顶 100，方便两处 UI 显示一致的「已写 / 目标 / 百分比」。 */
+  chapterProgress(path, current) {
+    let cur = current;
+    if (cur == null) {
+      if (this.liveText != null && this._livePath === path) cur = countWords(this.liveText);
+      else if (this.wordCache && this.wordCache[path] != null) cur = this.wordCache[path];
+      else cur = 0;
+    }
+    cur = Number(cur) || 0;
+    const target = Number(this.targetOf(path)) || 0;
+    const pct = target > 0 ? Math.min(100, Math.round(cur / target * 100)) : 0;
+    return { current: cur, target, pct, left: Math.max(0, target - cur) };
+  }
+  /* 反查「本章绑定了哪些内容」：绑定单向存于 owner.bindings（kind='chapter', id=章节path），
+     情节另用 chapters[]（{id,name}）。这里按章节路径反查，覆盖大纲/设定/灵感/情节/线/时空事件。
+     count = 本章正文出现次数：角色取 stats.perChapter 统计；大纲按其关联角色（标题/描述里点名的角色）累计。 */
+  bindingsOfChapter(path) {
+    const out = [];
+    const hit = (b) => b && b.kind === 'chapter' && b.id === path;
+    const chMap = (this.stats && this.stats.perChapter && this.stats.perChapter[path]) || {};
+    const entCount = (e) => Number(chMap[e.id]) || 0;
+    /* 大纲出现次数：标题/描述中点名的角色，其本章出现次数之和 */
+    const outlineCount = (o) => {
+      const hay = String(o.title || '') + ' ' + String(o.desc || '') + ' ' + String(o.content || '');
+      let sum = 0;
+      (this.data.entities || []).forEach((e) => {
+        const terms = [e.name].concat(e.aliases || []).filter(Boolean);
+        if (terms.some((term) => hay.indexOf(term) >= 0)) sum += entCount(e);
+      });
+      return sum;
+    };
+    (this.data.outlines || []).forEach((o) => { if ((o.bindings || []).some(hit)) out.push({ kind: 'outline', id: o.id, name: o.title || o.id, icon: outlineEmoji(o.type), count: outlineCount(o) }); });
+    (this.data.entities || []).forEach((e) => { if ((e.bindings || []).some(hit)) out.push({ kind: 'entity', id: e.id, name: e.name || e.id, icon: typeEmoji(e.type), count: entCount(e) }); });
+    (this.data.notes || []).forEach((n) => { if ((n.bindings || []).some(hit)) out.push({ kind: 'note', id: n.id, name: String(n.content || n.id).slice(0, 18), icon: '💡' }); });
+    (this.data.plots || []).forEach((pl) => { if ((pl.chapters || []).some((c) => c && c.id === path)) out.push({ kind: 'plot', id: pl.id, name: pl.name || pl.id, icon: '🧩' }); });
+    (this.data.tracks || []).forEach((tr) => { if ((tr.bindings || []).some(hit)) out.push({ kind: 'track', id: tr.id, name: tr.name || tr.id, icon: '⏳' }); });
+    (this.data.lineNodes || []).forEach((nd) => { if ((nd.bindings || []).some(hit)) out.push({ kind: 'node', id: nd.id, name: nd.label || nd.id, icon: '📍' }); });
+    (this.data.stEvents || []).forEach((ev) => { if ((ev.bindings || []).some(hit)) out.push({ kind: 'event', id: ev.id, name: ev.label || ev.id, icon: '🧩' }); });
+    return out;
+  }
+  /* 改某章目标字数（两处 UI 共用的弹窗），after 回调用于就地刷新而不必整页重绘 */
+  promptChapterTarget(path, after) {
+    new InputModal(this.app, t('本章目标字数（0=跟随全局默认 ') + (this.settings.chapterTarget || DEFAULT_CHAPTER_TARGET) + '）',
+      String(this.targetOf(path)), async (v) => {
+        const n = parseInt(v, 10);
+        if (isNaN(n) || n < 0) { new Notice(t('请输入有效数字')); return; }
+        await this.setMeta(path, { target: n });
+        await this.rescan(true);
+        new Notice(n > 0 ? t('本章目标：') + fmt(n) + t(' 字') : t('本章目标已跟随全局默认'));
+        if (typeof after === 'function') after(n);
+      }).open();
+  }
   async setActiveChapterTarget() {
     const f = this.app.workspace.getActiveFile();
     if (!f) { new Notice(t('请先打开一个章节')); return; }
-    new InputModal(this.app, t('本章目标字数（填 0 则用全局默认 ') + (this.settings.chapterTarget || DEFAULT_CHAPTER_TARGET) + '）',
-      String(this.targetOf(f.path)), async (v) => {
-        const n = parseInt(v, 10);
-        if (isNaN(n) || n < 0) { new Notice(t('请输入有效数字')); return; }
-        await this.setMeta(f.path, { target: n });
-        await this.rescan(true);
-        new Notice(n > 0 ? t('本章目标：') + fmt(n) + t(' 字') : t('本章目标已跟随全局默认'));
-      }).open();
+    this.promptChapterTarget(f.path);
   }
   /* 记录码字增量（由 CM6 在正文变更时调用），按天累计；v2.13 另记小时分布/工作日周末 */
   recordTyping(path, deltaWords) {
@@ -1408,7 +1451,14 @@ class NovelWriterStudio extends Plugin {
     if (!b) { b = el('div'); b.id = 'nws-progress'; document.body.appendChild(b); }
     this.barEl = b;
     b.innerHTML = '<div class="nws-bar-track"><div class="nws-bar-fill"></div></div>' +
-      '<div class="nws-bar-meta"><span class="nws-bar-name"></span><span class="nws-bar-nums"></span></div>';
+      '<div class="nws-bar-meta"><span class="nws-bar-name"></span><span class="nws-bar-nums"></span></div>' +
+      '<div class="nws-bar-binds"></div>';
+    /* 目标字数点击直接改（两处共用 promptChapterTarget） */
+    b.querySelector('.nws-bar-nums').addEventListener('click', (e) => {
+      const f = this.app.workspace.getActiveFile();
+      if (!f) return;
+      this.promptChapterTarget(f.path);
+    });
   }
   refreshProgressBar() {
     const b = this.barEl;
@@ -1416,21 +1466,16 @@ class NovelWriterStudio extends Plugin {
     const f = this.app.workspace.getActiveFile();
     const bodyDir = normalizePath(this.settings.folderBody || '正文');
     if (!f || f.extension !== 'md' || f.path.indexOf(bodyDir + '/') !== 0 || !this.settings.showProgressBar) {
-      b.style.display = 'none'; return;
+      b.style.display = 'none'; this.refreshChapterHead(); return;
     }
-    let current;
-    if (this.liveText != null && this._livePath === f.path) {
-      current = countWords(this.liveText);
-    } else if (this.wordCache[f.path] != null) {
-      current = this.wordCache[f.path];
-    } else {
-      /* 首次打开、尚无缓存：异步读取一次再刷新 */
-      this.app.vault.cachedRead(f).then((t) => { this.wordCache[f.path] = countWords(t); this.refreshProgressBar(); }).catch(() => {});
-      current = 0;
+    /* 首次打开、尚无缓存：异步读取一次再刷新（进度统一走 chapterProgress） */
+    if (!this.wordCache) this.wordCache = Object.create(null);
+    if (this.liveText == null || this._livePath !== f.path) {
+      if (this.wordCache[f.path] == null) {
+        this.app.vault.cachedRead(f).then((txt) => { this.wordCache[f.path] = countWords(txt); this.refreshProgressBar(); }).catch(() => {});
+      }
     }
-    const target = this.targetOf(f.path);
-    const pct = Math.min(100, target > 0 ? Math.round(current / target * 100) : 0);
-    const left = Math.max(0, target - current);
+    const { current, target, pct, left } = this.chapterProgress(f.path);
     const pace = this.pacePerMinute();
     b.style.display = '';
     b.dataset.pct = String(pct);
@@ -1438,6 +1483,123 @@ class NovelWriterStudio extends Plugin {
     b.querySelector('.nws-bar-name').textContent = '✍️ ' + f.basename;
     b.querySelector('.nws-bar-nums').textContent = fmt(current) + ' / ' + fmt(target) + ' 字 · ' + pct + '% · 还差 ' + fmt(left) +
       ' · 速度 ' + pace + ' 字/分' + (this.focusState.active ? ' · ⏱ ' + fmtDur(this.focusElapsed()) : '');
+    /* 绑定内容（反查本章被哪些大纲/设定/情节等关联），点击可跳转 */
+    const bindWrap = b.querySelector('.nws-bar-binds');
+    if (bindWrap) {
+      const binds = this.bindingsOfChapter(f.path);
+      bindWrap.empty ? bindWrap.empty() : (bindWrap.textContent = '');
+      if (binds.length) {
+        const label = document.createElement('span');
+        label.className = 'nws-bar-bind-label';
+        label.textContent = '🔗 ';
+        bindWrap.appendChild(label);
+        binds.forEach((x) => {
+          const chip = document.createElement('span');
+          chip.className = 'nws-bar-bind-chip';
+          const cnt = Number(x.count) || 0;
+          chip.textContent = x.icon + ' ' + x.name;
+          if (cnt > 0) {
+            const num = document.createElement('span');
+            num.className = 'nws-bar-bind-count';
+            num.textContent = ' ×' + cnt;
+            chip.appendChild(num);
+          }
+          const kindName = { outline: '大纲', entity: '角色/设定', note: '灵感', plot: '情节', track: '时间线', node: '节点', event: '时空事件' }[x.kind] || x.kind;
+          chip.title = kindName + ' · ' + x.name + (cnt > 0 ? ' · 本章出现 ' + cnt + ' 次' : ' · 本章未提及');
+          chip.addEventListener('click', () => this.openBinding(x));
+          bindWrap.appendChild(chip);
+        });
+      }
+    }
+    this.refreshChapterHead(); // 章节头卡片与悬浮条同源同步刷新
+  }
+  /* 点击绑定标签：按类型跳转到对应条目 */
+  openBinding(x) {
+    if (x.kind === 'chapter') return this.openChapterByPath(x.id);
+    if (x.kind === 'entity') return new EntityDetailModal(this.app, this, this.entityById(x.id)).open();
+    if (x.kind === 'outline') return this.openOutlineFile(x.id);
+    if (x.kind === 'plot') { this.activateView(VIEW_PLOTS); return; }
+    if (x.kind === 'note') { this.activateView(VIEW_NOTES); return; }
+    if (x.kind === 'track' || x.kind === 'node' || x.kind === 'event') { this.activateView(VIEW_LINES); return; }
+  }
+
+  /* ---------- v2.14+：章节头卡片——嵌在每章正文最上方（非悬浮），与悬浮条数据同源 ----------
+     结构对照设计稿：第一行 章节名 + 右侧「已写 X / 目标 Y 字 · Z%」，下面进度条，再下面绑定内容行；
+     未绑定时显示中文提示（在 大纲 / 情节 / 设定 中可绑定本章）。 */
+  refreshChapterHead() {
+    try {
+      const mdLeaves = (this.app.workspace.getLeavesOfType ? this.app.workspace.getLeavesOfType('markdown') : []) || [];
+      const f = this.app.workspace.getActiveFile();
+      const bodyDir = normalizePath(this.settings.folderBody || '正文');
+      const on = !!(f && f.extension === 'md' && f.path.indexOf(bodyDir + '/') === 0 && this.settings.showChapterHead !== false);
+      /* 先隐藏所有 markdown 视图里已有的卡片（只显示当前激活章节的那张） */
+      mdLeaves.forEach((lv) => {
+        const c = lv.view && lv.view.contentEl && lv.view.contentEl.querySelector ? lv.view.contentEl.querySelector('.nws-chapter-head') : null;
+        if (c) c.style.display = 'none';
+      });
+      if (!on) return;
+      const leaf = mdLeaves.find((lv) => lv.view && lv.view.file && lv.view.file.path === f.path);
+      const view = leaf && leaf.view;
+      if (!view || !view.contentEl || !view.contentEl.insertBefore) return;
+      let head = view.contentEl.querySelector('.nws-chapter-head');
+      if (!head) {
+        head = el('div');
+        head.className = 'nws-chapter-head';
+        view.contentEl.insertBefore(head, view.contentEl.firstChild);
+        head.innerHTML = '<div class="nws-ch-head-row"><span class="nws-ch-title"></span><span class="nws-ch-nums"></span></div>' +
+          '<div class="nws-ch-track"><div class="nws-ch-fill"></div></div>' +
+          '<div class="nws-ch-binds"></div>';
+        /* 右侧字数/百分比：点击直接改目标字数 */
+        head.querySelector('.nws-ch-nums').addEventListener('click', () => {
+          const af = this.app.workspace.getActiveFile();
+          if (af) this.promptChapterTarget(af.path);
+        });
+      }
+      head.style.display = '';
+      head.querySelector('.nws-ch-title').textContent = '📄 ' + f.basename;
+      const { current, target, pct, left } = this.chapterProgress(f.path);
+      const nums = head.querySelector('.nws-ch-nums');
+      nums.textContent = '已写 ' + fmt(current) + ' / ' + fmt(target) + ' 字 · ' + pct + '% · 还差 ' + fmt(left);
+      nums.title = '目标 ' + fmt(target) + ' 字 · 点击修改目标字数';
+      head.querySelector('.nws-ch-fill').style.width = pct + '%';
+      /* 绑定内容行：有绑定显示 chips（含出现次数），无绑定显示中文提示；末尾均有「＋ 绑定」直接在本卡完成绑定 */
+      const binds = this.bindingsOfChapter(f.path);
+      const bindWrap = head.querySelector('.nws-ch-binds');
+      bindWrap.textContent = '';
+      if (binds.length) {
+        const label = document.createElement('span');
+        label.className = 'nws-ch-bind-label';
+        label.textContent = '🔗 ';
+        bindWrap.appendChild(label);
+        binds.forEach((x) => {
+          const chip = document.createElement('span');
+          chip.className = 'nws-ch-bind-chip';
+          chip.textContent = x.icon + ' ' + x.name;
+          const cnt = Number(x.count) || 0;
+          if (cnt > 0) {
+            const num = document.createElement('span');
+            num.className = 'nws-ch-bind-count';
+            num.textContent = ' ×' + cnt;
+            chip.appendChild(num);
+          }
+          const kindName = { outline: '大纲', entity: '角色/设定', note: '灵感', plot: '情节', track: '时间线', node: '节点', event: '时空事件' }[x.kind] || x.kind;
+          chip.title = kindName + ' · ' + x.name + (cnt > 0 ? ' · 本章出现 ' + cnt + ' 次' : '');
+          chip.addEventListener('click', () => this.openBinding(x));
+          bindWrap.appendChild(chip);
+        });
+      } else {
+        const hint = document.createElement('span');
+        hint.className = 'nws-ch-bind-hint';
+        hint.textContent = '本章暂无绑定 · ';
+        bindWrap.appendChild(hint);
+      }
+      const addChip = document.createElement('span');
+      addChip.className = 'nws-ch-bind-add';
+      addChip.textContent = '＋ 绑定';
+      addChip.title = '把大纲 / 角色 / 情节 / 灵感等绑定到本章';
+      addChip.addEventListener('click', () => new ChapterBindModal(this.app, this, f.path).open());
+      bindWrap.appendChild(addChip);
+    } catch (e) { /* 章节头为增强显示，异常静默，不影响写作 */ }
   }
 
   /* ---------- v2.11：专注模式右下角实时统计 HUD ---------- */
@@ -1627,7 +1789,7 @@ class NovelWriterStudio extends Plugin {
     /* v2.8：键盘声移入打字音效（playTypeSound），背景音不再包含 */
   }
 
-  /* ---------- v2.17 写作场景（预设 + 自定义；场景 = 壁纸/背景音/打字音效/打字模式/全屏 的打包） ---------- */
+
   sceneList() { return SCENE_PRESETS.concat(this.settings.customScenes || []); }
   sceneById(id) { return this.sceneList().find((s) => s.id === id) || null; }
   async applyScene(id) {
@@ -1660,7 +1822,8 @@ class NovelWriterStudio extends Plugin {
     await this.saveNow();
   }
 
-  /* ---------- 专注会话（专注模式 / 番茄钟共用计时） ---------- */
+  /* ---------- 专注会话（专注模式 / 番茄钟 / 正计时共用计时） ---------- */
+  /* mode: 'work' 番茄钟倒计时 | 'focus' 自由专注倒计时 | 'stopwatch' 正计时（秒表，从 0 累加不自动结束） */
   startFocusSession(mode, seconds) {
     this.stopFocusSession(true);
     /* v2.13：番茄钟开始计数（完成率统计） */
@@ -1670,11 +1833,11 @@ class NovelWriterStudio extends Plugin {
     }
     this.focusState = {
       active: true, mode, seconds: 0, paused: false, left: seconds, startedAt: Date.now(),
-      wallpaper: this.settings.focusWallpaper, sound: this.settings.focusSound,
+      wallpaper: this.settings.focusWallpaper, sound: this.settings.focusSound, countUp: mode === 'stopwatch',
     };
     this.applyFocusWallpaper(this.settings.focusWallpaper);
-    if (mode === 'focus') {
-      /* v2.8：专注模式进入禅状态（全屏+隐藏侧边栏）；番茄钟计时不动界面 */
+    if (mode === 'focus' || mode === 'stopwatch') {
+      /* v2.8：专注模式/正计时进入禅状态（全屏+隐藏侧边栏）；番茄钟计时不动界面 */
       if (this.settings.focusFullscreen !== false) this.enterFocusZen();
       this.startSound(this.settings.focusSound);
       this.refreshFocusHUD();
@@ -1682,22 +1845,25 @@ class NovelWriterStudio extends Plugin {
     this.focusState.timer = setInterval(() => {
       const s = this.focusState;
       if (!s.active || s.paused) return;
-      s.seconds++; s.left--;
+      s.seconds++;
+      /* 正计时（秒表）：left 不递减，永不自动结束，由用户手动「结束」 */
+      if (!s.countUp) s.left--;
       /* 每秒落盘，防止中途退出丢失 */
       const k = dateKey();
       const d = this.data.daily[k] || (this.data.daily[k] = { words: 0, secs: 0, focus: 0, sessions: 0 });
-      if (mode === 'focus') d.focus++;
+      if (mode === 'focus' || mode === 'stopwatch') d.focus++;
       this.scheduleSave();
-      if (s.left <= 0) { this.finishFocusSession(); return; }
+      if (!s.countUp && s.left <= 0) { this.finishFocusSession(); return; }
       this.refreshProgressBar();
     }, 1000);
-    new Notice(t('已开始') + (mode === 'focus' ? t('专注') : t('计时')) + t('：') + fmtDur(seconds));
+    new Notice(t('已开始') + (mode === 'focus' ? t('专注') : mode === 'stopwatch' ? t('正计时') : t('计时')) +
+      (mode === 'stopwatch' ? '' : t('：') + fmtDur(seconds)));
   }
   pauseFocusSession() {
     const s = this.focusState;
     if (!s.active) return;
     if (!s.paused) { s.paused = true; this.stopSound(); }
-    else { s.paused = false; if (s.mode === 'focus') this.startSound(s.sound); }
+    else { s.paused = false; if (s.mode === 'focus' || s.mode === 'stopwatch') this.startSound(s.sound); }
   }
   finishFocusSession() {
     const s = this.focusState;
@@ -1912,7 +2078,7 @@ class NovelWriterStudio extends Plugin {
       tags: fields.tags || [],
       color: fields.color == null ? 3 : fields.color,
       note: fields.note || '',
-      /* v2.17 情节控制字段 */
+   
       lineType: ['主线', '支线', '暗线'].indexOf(fields.lineType) >= 0 ? fields.lineType : '主线',
       parentId: fields.parentId || '',
       beats: Array.isArray(fields.beats) ? fields.beats : [],
@@ -2056,9 +2222,7 @@ class NovelWriterStudio extends Plugin {
     return parts.length ? '围绕' + vd.node + '：' + parts.join('、') : '（未绑定对象，点「绑定」关联人物/情节/线索/伏笔；视角：' + vd.name + '）';
   }
 
-  /* ========== v2.17 时空事件（纵轴时间 × 横轴空间 的映射；含自定义维度） ==========
-     事件 = { id, timeNode, spaceNode, dims:{trackId:nodeId}, label, content, bindings, causal(因果), result(结果), impact(影响) }
-     时间/空间可只填其一（两轴相互独立）；都填 = 该事件落在时空交叉格上（即时间与空间存在映射）。 */
+ 
   stEventById(id) { return (this.data.stEvents || []).find((e) => e.id === id); }
   async addStEvent(fields) {
     const e = {
@@ -2349,6 +2513,7 @@ class NovelWriterStudio extends Plugin {
     reg('open-stats', '打开数据中心（热力图/码字统计）', () => this.activateView(VIEW_STATS));
     reg('focus-mode', '专注写作 · 自由专注（写作场景+壁纸+音效）', () => new FocusModal(this.app, this, 'focus').open());
     reg('pomodoro', '专注写作 · 番茄钟', () => new FocusModal(this.app, this, 'pomodoro').open());
+    reg('stopwatch', '专注写作 · 正计时（秒表，从0累加）', () => new FocusModal(this.app, this, 'stopwatch').open());
     reg('set-chapter-target', '设定本章目标字数', () => this.setActiveChapterTarget());
     reg('chapter-stats', '本章数据统计（目标/速度/专注/设定分布/Top10）', () => {
       const f = this.app.workspace.getActiveFile();
@@ -2422,16 +2587,18 @@ class NovelWriterStudio extends Plugin {
           new AnnotationModal(p.app, p, file ? file.path : '', text, from, to).open();
         }));
       menu.addSeparator();
-      /* v2.16.1：总开关控制——关闭时隐藏快捷分类与两级归类，仅保留一个「自定义设定」入口 */
+    
+
       if (p.settings.quickClassifyOn) {
-        /* v2.16：只显示设置页勾选「正文快捷显示」的类型（默认 人物/情节/伏笔）；v2.16.2 合并自定义快捷项（⭐） */
+     
+
         p.quickClassifyTypes().forEach((q) => {
           menu.addItem((item) => item.setTitle(q.emoji + ' ' + t('设为') + ' ' + t(q.name)).setIcon('tag')
             .onClick(async () => { await p.classifySelection(text, q.type, q.group); }));
         });
         menu.addSeparator();
       }
-      /* v2.16.3：大类▸小库两级归类 + 自定义入口——设置开关控制，默认隐藏（quickClassifyOn 关闭时也不出现） */
+    
       if (p.settings.quickClassifyOn && p.settings.groupClassifyOn) {
         ENTITY_GROUPS.forEach((g) => {
           menu.addItem((item) => {
@@ -2858,7 +3025,7 @@ function setViewRoot(view, html) {
   const root = el('div', 'nws-root nws-view');
   root.innerHTML = html;
   view.contentEl.appendChild(root);
-  /* v2.16.3：英文模式下每次渲染即翻译（视图数据刷新后仍保持英文） */
+
   try { trNode(root); } catch (e) {}
   return root;
 }
@@ -2977,15 +3144,10 @@ class CatalogView extends ItemView {
       new Notice(t('状态 → ') + CH_STATUS[st]);
       this.render();
     }));
-    /* 字数标签：点击设目标 */
-    root.querySelectorAll('[data-target]').forEach((b) => b.addEventListener('click', async (e) => {
+    /* ✎目标标签：点击设目标（与正文顶部条共用 promptChapterTarget，数据同源） */
+    root.querySelectorAll('[data-target]').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
-      const path = b.dataset.target;
-      new InputModal(this.app, t('本章目标字数（0=跟随全局）'), String(p.targetOf(path)), async (v) => {
-        const n = parseInt(v, 10); if (isNaN(n) || n < 0) return;
-        await p.setMeta(path, { target: n }); await p.rescan(true);
-        new Notice(n > 0 ? t('目标已设为 ') + fmt(n) + t(' 字') : t('已跟随全局目标'));
-      }).open();
+      p.promptChapterTarget(b.dataset.target, () => this.render());
     }));
     root.querySelectorAll('[data-act="newchap"]').forEach((b) => b.addEventListener('click', () => p.newChapter(b.dataset.vol)));
     root.querySelector('[data-act="newvol"]').addEventListener('click', () => p.newVolume());
@@ -3288,8 +3450,8 @@ class LinesView extends ItemView {
   nodeHtml(n) {
     const p = this.plugin;
     const binds = (n.bindings || []).map((b) => {
-      const em = b.kind === 'plot' ? '🧩' : typeEmoji(b.type || b.kind);
-      return '<span class="nws-lbind" data-nb="' + escapeHtml(b.kind) + '" data-nbid="' + escapeHtml(b.id) + '">' + em + ' ' + escapeHtml(b.name || b.id) + '</span>';
+      const em = b.icon || (b.kind === 'plot' ? '🧩' : typeEmoji(b.type || b.kind));
+      return '<span class="nws-lbind" data-nb="' + escapeHtml(b.kind) + '" data-nbid="' + escapeHtml(b.id) + '" data-nbname="' + escapeHtml(b.name || b.id) + '">' + em + ' ' + escapeHtml(b.name || b.id) + '</span>';
     }).join('');
     return '<div class="nws-node" data-nid="' + n.id + '">' +
       '<div class="nws-node-at">' + escapeHtml(n.at || '') + '</div>' +
@@ -3311,8 +3473,8 @@ class LinesView extends ItemView {
     const body = nodes.map((n) => this.nodeHtml(n)).join('') || '<div class="nws-line-empty">该轨暂无节点。<br>点「＋ 添加' + escapeHtml(vd.node) + '」开始。</div>';
     /* 轨级绑定（整条线围绕谁/什么） */
     const binds = (t.bindings || []).map((b) =>
-      '<span class="nws-track-bind" data-tb="' + escapeHtml(b.kind) + '" data-tbid="' + escapeHtml(b.id) + '">' +
-      (b.kind === 'plot' ? '🧩' : typeEmoji(b.type || b.kind)) + ' ' + escapeHtml(b.name || b.id) + '</span>').join('');
+      '<span class="nws-track-bind" data-tb="' + escapeHtml(b.kind) + '" data-tbid="' + escapeHtml(b.id) + '" data-tbname="' + escapeHtml(b.name || b.id) + '">' +
+      (b.icon || (b.kind === 'plot' ? '🧩' : typeEmoji(b.type || b.kind))) + ' ' + escapeHtml(b.name || b.id) + '</span>').join('');
     return '<div class="nws-linecol nws-line-' + t.axis + '" data-tid="' + t.id + '">' +
       '<div class="nws-linecol-h"><span class="nws-track-h"><span class="nws-track-emoji">' + ad.emoji + vd.emoji + '</span>' +
       '<span class="nws-track-name" data-ta="rename" title="点击重命名">' + escapeHtml(t.name) + ' <span class="nws-rename-ic">✎</span></span>' +
@@ -3327,7 +3489,7 @@ class LinesView extends ItemView {
       '<div class="nws-track-add"><button class="nws-btn sm pri" data-act="addline" data-line="' + t.id + '">＋ 添加' + escapeHtml(vd.node) + '</button></div>' +
       '<div class="nws-linetrack">' + body + '</div></div>';
   }
-  /* v2.17：视图分发 —— 分轴列表 / 时空矩阵（纵轴时间×横轴空间） / 时空事件表 */
+ 
   render() {
     const mode = this.plugin.settings.linesViewMode || 'axes';
     if (mode === 'matrix') return this.renderMatrix();
@@ -3369,14 +3531,21 @@ class LinesView extends ItemView {
       tracks.length + ' 条轨 · ' + totalNodes + ' 节点</span></div>' +
       '<div class="nws-sp"></div>' +
       '<button class="nws-fold" data-view="plots">🧩 情节</button>' +
+      '<button class="nws-btn" data-act="newangle">🧵 角度线</button>' +
       '<button class="nws-btn pri" data-act="newtrack">＋ 新建线</button></div>' +
-      '<div class="nws-psub">⏳ 时间线为纵轴、🗺️ 空间线为横轴（时空矩阵）；两类线可相互独立，同时使用即建立映射。可加自定义线（如视角）。点名称即重命名</div>' +
+      '<div class="nws-psub">🧵 角度线：任意命名一个角度（视角/氛围/时间…），像时间轴一样往下加节点，节点可绑定设定库里已有的任何内容。⏳ 时间线为纵轴、🗺️ 空间线为横轴（时空矩阵）。点名称即重命名</div>' +
       '<div class="nws-filters">' + axisBtns + '</div>' + this.viewSwitchHtml() + '</div>' +
       '<div class="nws-lines">' + cols + '</div>');
     root.querySelector('[data-view="plots"]').addEventListener('click', () => p.activateView(VIEW_PLOTS));
     this.bindViewSwitch(root);
     root.querySelectorAll('[data-axis]').forEach((b) => b.addEventListener('click', async () => { p.toggleAxis(b.dataset.axis); await p.saveNow(); this.render(); }));
     root.querySelector('[data-act="newtrack"]').addEventListener('click', () => new TrackModal(this.app, p, null).open());
+    /* 角度线快捷入口：预设 custom 轴，打开即聚焦命名，直接输入角度名 */
+    const angleBtn = root.querySelector('[data-act="newangle"]');
+    if (angleBtn) angleBtn.addEventListener('click', () => {
+      if (!p.axisOn('custom')) { p.toggleAxis('custom'); p.saveNow(); }
+      new TrackModal(this.app, p, null, 'custom').open();
+    });
     /* 轨工具（含点名称重命名、绑定） */
     root.querySelectorAll('[data-ta]').forEach((b) => b.addEventListener('click', () => {
       const tid = b.closest('.nws-linecol').dataset.tid, t = p.trackById(tid), ta = b.dataset.ta;
@@ -3387,11 +3556,10 @@ class LinesView extends ItemView {
       else if (ta === 'up') p.moveTrack(tid, -1);
       else if (ta === 'down') p.moveTrack(tid, 1);
     }));
-    /* 轨绑定 chip 点击跳转 */
+    /* 轨绑定 chip 点击跳转（统一走 openBinding，覆盖所有可绑定类型） */
     root.querySelectorAll('[data-tb]').forEach((tag) => tag.addEventListener('click', () => {
-      const kind = tag.dataset.tb, bid = tag.dataset.tbid;
-      if (kind === 'plot') p.activateView(VIEW_PLOTS);
-      else { const e = p.entityById(bid); if (e) new EntityDetailModal(this.app, p, e).open(); }
+      const kind = tag.dataset.tb, bid = tag.dataset.tbid, bname = tag.dataset.tbname;
+      p.openBinding({ kind, id: bid, name: bname });
     }));
     root.querySelectorAll('[data-act="addline"]').forEach((b) => b.addEventListener('click', () => new LineNodeModal(this.app, p, b.dataset.line, null).open()));
     root.querySelectorAll('.nws-node').forEach((el) => {
@@ -3404,15 +3572,13 @@ class LinesView extends ItemView {
         else if (act === 'down') p.moveLineNode(id, 1);
       }));
       el.querySelectorAll('[data-nb]').forEach((tag) => tag.addEventListener('click', () => {
-        const kind = tag.dataset.nb, bid = tag.dataset.nbid;
-        if (kind === 'plot') p.activateView(VIEW_PLOTS);
-        else { const e = p.entityById(bid); if (e) new EntityDetailModal(this.app, p, e).open(); }
+        const kind = tag.dataset.nb, bid = tag.dataset.nbid, bname = tag.dataset.nbname;
+        p.openBinding({ kind, id: bid, name: bname });
       }));
     });
   }
 
-  /* v2.17 时空矩阵：纵轴 = 时间线节点（行），横轴 = 空间线节点（列）；
-     两轴独立可单用，同时使用 = 交叉格上的事件即「时间↔空间映射」。 */
+
   renderMatrix() {
     const p = this.plugin;
     const timeTracks = p.visibleTracks().filter((t) => t.axis === 'time');
@@ -3464,7 +3630,6 @@ class LinesView extends ItemView {
     }));
   }
 
-  /* v2.17 时空事件表：时间 / 地点 / 人物 / 事件 / 因果 / 结果 / 影响（+ 自定义维度列），可复制 Markdown */
   renderTable() {
     const p = this.plugin;
     const dimTracks = p.visibleTracks().filter((t) => t.axis === 'custom');
@@ -3502,7 +3667,7 @@ class LinesView extends ItemView {
   }
 }
 
-/* v2.17 新建/编辑时空事件（时间×空间映射 + 自定义维度 + 因果/结果/影响） */
+
 class StEventModal extends Modal {
   constructor(app, plugin, ev, prefill) { super(app); this.p = plugin; this.ev = ev; this.pre = prefill || {}; }
   onOpen() {
@@ -3585,16 +3750,19 @@ class StEventModal extends Modal {
 
 /* 新建/编辑一条线（轨）：名称 + 轴（时间/空间/情绪）+ 视角 + 整体绑定 */
 class TrackModal extends Modal {
-  constructor(app, plugin, track) { super(app); this.p = plugin; this.t = track; this.binds = track ? (track.bindings || []).slice() : []; }
+  constructor(app, plugin, track, presetAxis) { super(app); this.p = plugin; this.t = track; this.presetAxis = presetAxis || ''; this.binds = track ? (track.bindings || []).slice() : []; }
   onOpen() {
     /* 注意：局部轨变量命名 tr，不得用 t——t 是全局翻译函数，遮蔽会导致新建/保存按钮无法渲染 */
     const { contentEl } = this, p = this.p, tr = this.t, isNew = !tr;
-    contentEl.createEl('h3', { text: (isNew ? '新建' : '编辑') + '线（时间 / 空间 / 情绪）' });
-    const name = contentEl.createEl('input'); name.type = 'text'; name.placeholder = t('线名称（可重命名，如：张三的行动轨迹 / 京城地理线 / 主角情绪曲线）'); name.style.width = '100%';
+    const isAngle = this.presetAxis === 'custom';
+    contentEl.createEl('h3', { text: isAngle ? '🧵 新建角度线' : (isNew ? '新建' : '编辑') + '线（时间 / 空间 / 情绪 / 角度）' });
+    const name = contentEl.createEl('input'); name.type = 'text';
+    name.placeholder = isAngle ? t('角度名称（任意命名，如：视角 / 氛围 / 时间 / 关键道具 / 信息秘密…）') : t('线名称（可重命名，如：张三的行动轨迹 / 京城地理线 / 主角情绪曲线）');
+    name.style.width = '100%';
     if (tr) name.value = tr.name;
 
     contentEl.createEl('p', { text: t('① 线的类型（可只建一种，也可多条对照）') }).style.cssText = 'font-weight:600;margin:12px 0 5px';
-    let axis = tr ? tr.axis : 'time';
+    let axis = tr ? tr.axis : (this.presetAxis || 'time');
     const axisBtns = contentEl.createDiv(); axisBtns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
     const axisBtnsArr = [];
     const namePresets = contentEl.createDiv(); namePresets.style.cssText = 'margin-top:6px;display:flex;gap:5px;flex-wrap:wrap';
@@ -3917,7 +4085,7 @@ class PlotModal extends Modal {
     const note = contentEl.createEl('textarea'); note.style.cssText = 'width:100%;height:52px'; note.placeholder = t('补充备注…');
     if (pl) note.value = pl.note || '';
 
-    /* ===== v2.17 ⑤ 情节控制（线类型 · 所属主线 · 冲突链 · 转折点 · 节拍表 · 伏笔节奏） ===== */
+    
     contentEl.createEl('p', { text: t('⑤ 情节控制（主线/支线 · 冲突链 · 转折点 · 节拍 · 伏笔节奏）') }).style.cssText = 'font-weight:600;margin-top:14px;margin-bottom:6px';
     const ltRow = contentEl.createDiv(); ltRow.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
     ltRow.createSpan({ text: t('线类型：') }).style.cssText = 'font-size:11px';
@@ -3979,7 +4147,7 @@ class PlotModal extends Modal {
         stages: {}, roles: selRoles, chapters: selChs,
         tags: tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
         color: chosenColor, note: note.value,
-        /* v2.17 情节控制 */
+       
         lineType, parentId: parentSel.value,
         conflictChain: chain.value, turningPoints: turns.value,
         foreshadowPlant: fPlant.value, foreshadowPayoff: fPayoff.value,
@@ -4050,9 +4218,11 @@ class LineNodeModal extends Modal {
         chip.className = 'nws-bind'; chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => { this.binds = this.binds.filter((x) => !(x.id === b.id && x.kind === b.kind)); renderBinds(); });
       });
-      const add = bindBox.createEl('button', { text: t('＋ 绑定') }); add.className = 'nws-btn sm';
+      const add = bindBox.createEl('button', { text: t('＋ 绑定内容') }); add.className = 'nws-btn sm';
       add.addEventListener('click', () => new LineBindModal(this.app, p, (pick) => {
         if (!this.binds.some((x) => x.id === pick.id && x.kind === pick.kind)) { this.binds.push(pick); renderBinds(); }
+        /* 绑定「章节/时间」时，若时间刻度为空则自动带入章节名，方便直接把章节当作时间节点 */
+        if (pick.kind === 'chapter' && !at.value.trim()) { at.value = pick.name; }
       }).open());
     };
     renderBinds();
@@ -4075,35 +4245,53 @@ class LineNodeModal extends Modal {
   onClose() { this.contentEl.empty(); }
 }
 
-/* 双线节点：通用绑定选择器（设定库实体 + 情节） */
+/* 双线节点 / 角度线节点：通用绑定选择器
+   v2.14+：绑定范围从写死的 LINE_BIND_KINDS 扩展为「整个设定库 + 大纲 + 灵感 + 情节 + 线 + 时空事件 + 章节/时间」，
+   动态按 data.entities 里实际存在的 type 分组（含用户自定义的「氛围」「时间」等类型），真正实现"绑定之前设定里设定的东西"。 */
 class LineBindModal extends Modal {
   constructor(app, plugin, onPick) { super(app); this.p = plugin; this.onPick = onPick; this.q = ''; }
   onOpen() {
     const { contentEl } = this, p = this.p;
-    contentEl.createEl('h3', { text: t('绑定对象') });
+    contentEl.createEl('h3', { text: t('绑定到本章已设定的内容') });
+    const tip = contentEl.createDiv();
+    tip.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
+    tip.textContent = '可绑定设定库里的任意内容（人物/氛围/时间/场景/伏笔…）、大纲、灵感、情节、线与事件；点选即绑定到当前节点。';
     const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('搜索…'); inp.style.width = '100%';
-    const list = contentEl.createDiv(); list.style.cssText = 'max-height:340px;overflow:auto;margin-top:8px';
+    const list = contentEl.createDiv(); list.style.cssText = 'max-height:360px;overflow:auto;margin-top:8px';
     const render = () => {
       list.empty();
       const q = this.q.trim().toLowerCase();
       const section = (title, items) => {
-        const arr = items.filter((x) => !q || x.name.toLowerCase().indexOf(q) >= 0);
+        const arr = items.filter((x) => !q || String(x.name).toLowerCase().indexOf(q) >= 0);
         if (!arr.length) return;
         list.createEl('div', { text: title }).style.cssText = 'font-size:10px;color:var(--text-muted);margin:10px 0 4px;font-weight:600';
         arr.forEach((it) => {
           const row = list.createDiv();
           row.style.cssText = 'display:flex;gap:8px;padding:6px 8px;border-radius:5px;cursor:pointer';
-          row.createSpan({ text: typeEmoji(it.type || it.kind) + ' ' + it.name });
+          row.createSpan({ text: (it.icon || typeEmoji(it.type || it.kind)) + ' ' + it.name });
           row.addEventListener('click', () => { this.onPick(it); this.close(); });
           row.addEventListener('mouseenter', () => row.style.background = 'var(--background-modifier-hover)');
           row.addEventListener('mouseleave', () => row.style.background = '');
         });
       };
-      section('🧩 情节', p.data.plots.map((pl) => ({ kind: 'plot', id: pl.id, name: pl.name, type: '剧情' })));
-      LINE_BIND_KINDS.filter((k) => k !== '情节').forEach((k) => {
-        const arr = p.data.entities.filter((e) => e.type === k);
-        if (arr.length) section(typeEmoji(k) + ' ' + k, arr.map((e) => ({ kind: 'entity', id: e.id, name: e.name, type: e.type })));
+      /* 1) 章节 / 时间：章节可作时间刻度来源，绑定后节点即关联该章时间 */
+      section('🗓 章节 / 时间', (p.allChapters() || []).map((c) => ({ kind: 'chapter', id: c.path, name: (c.volume ? c.volume + ' / ' : '') + c.title, type: '时间', icon: '📄' })));
+      /* 2) 设定库：按 data.entities 里实际存在的所有 type 动态分组（含氛围/时间等自定义类型） */
+      const byType = Object.create(null);
+      (p.data.entities || []).forEach((e) => { const k = e.type || '设定'; (byType[k] = byType[k] || []).push(e); });
+      Object.keys(byType).sort().forEach((k) => {
+        section(typeEmoji(k) + ' ' + k, byType[k].map((e) => ({ kind: 'entity', id: e.id, name: e.name, type: e.type, icon: typeEmoji(e.type) })));
       });
+      /* 3) 大纲 */
+      section('📋 大纲', (p.data.outlines || []).map((o) => ({ kind: 'outline', id: o.id, name: o.title || o.id, type: o.type, icon: outlineEmoji(o.type) })));
+      /* 4) 灵感 */
+      section('💡 灵感', (p.data.notes || []).map((n) => ({ kind: 'note', id: n.id, name: String(n.content || n.id).slice(0, 24), type: '灵感', icon: '💡' })));
+      /* 5) 情节 */
+      section('🧩 情节', (p.data.plots || []).map((pl) => ({ kind: 'plot', id: pl.id, name: pl.name, type: '剧情', icon: '🧩' })));
+      /* 6) 线（角度线/时间线/空间线等，可跨线引用） */
+      section('🧵 线', (p.data.tracks || []).map((tr) => ({ kind: 'track', id: tr.id, name: tr.name || tr.id, type: '线', icon: '🧵' })));
+      /* 7) 时空事件 */
+      section('🧩 时空事件', (p.data.stEvents || []).map((ev) => ({ kind: 'event', id: ev.id, name: ev.label || ev.id, type: '事件', icon: '🧩' })));
     };
     inp.addEventListener('input', (e) => { this.q = e.target.value; render(); });
     render();
@@ -4393,6 +4581,87 @@ class BindModal extends Modal {
     };
     inp.addEventListener('input', (e) => { this.q = e.target.value; render(); });
     render();
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+/* 章节视角绑定弹窗：从某一章出发，勾选要绑定到本章的大纲/角色/情节/灵感/线/节点/时空事件。
+   与 BindModal（条目视角绑章节）互补，供章节进度卡「＋ 绑定」直接调用。 */
+class ChapterBindModal extends Modal {
+  constructor(app, plugin, chapterPath) {
+    super(app);
+    this.p = plugin;
+    this.path = chapterPath;
+    const c = plugin.allChapters().find((x) => x.path === chapterPath);
+    this.chName = (c && c.title) || (chapterPath.split('/').pop() || '').replace(/\.md$/, '');
+    this.q = '';
+  }
+  onOpen() {
+    const { contentEl } = this, p = this.p;
+    contentEl.createEl('h3', { text: t('🔗 绑定到本章 · ') + this.chName });
+    const hint = contentEl.createEl('div', { text: t('点击条目即可绑定/取消绑定到本章。绑定后本章进度卡会显示该内容及其出现次数。') });
+    hint.style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px';
+    const inp = contentEl.createEl('input'); inp.type = 'text'; inp.placeholder = t('搜索…'); inp.style.width = '100%';
+    const list = contentEl.createDiv(); list.style.cssText = 'max-height:340px;overflow:auto;margin-top:8px';
+    const isBound = (kind, id) => {
+      if (kind === 'plot') { const pl = (p.data.plots || []).find((x) => x.id === id); return !!(pl && (pl.chapters || []).some((c) => c && c.id === this.path)); }
+      const owner = this.ownerOf(kind, id);
+      return !!(owner && (owner.bindings || []).some((b) => b.kind === 'chapter' && b.id === this.path));
+    };
+    const self = this;
+    const render = () => {
+      list.empty();
+      const q = self.q.trim().toLowerCase();
+      const section = (title, items) => {
+        const arr = items.filter((x) => !q || x.name.toLowerCase().indexOf(q) >= 0);
+        if (!arr.length) return;
+        list.createEl('div', { text: title }).style.cssText = 'font-size:10px;color:var(--text-muted);margin:10px 0 4px;font-weight:600';
+        arr.forEach((it) => {
+          const on = isBound(it.kind, it.id);
+          const row = list.createDiv();
+          row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px;cursor:pointer;' + (on ? 'background:rgba(143,163,148,.18)' : '');
+          row.createSpan({ text: (on ? '✅ ' : '⬜ ') + it.icon + ' ' + it.name });
+          row.addEventListener('click', async () => { await self.toggle(it.kind, it.id, it.name); render(); });
+        });
+      };
+      section('📋 大纲', (p.data.outlines || []).map((o) => ({ kind: 'outline', id: o.id, name: typeEmoji(o.type, true) + ' ' + (o.title || o.id), icon: '📋' })));
+      section('👤 角色 / 设定', (p.data.entities || []).map((e) => ({ kind: 'entity', id: e.id, name: typeEmoji(e.type) + ' ' + e.name + '（' + e.type + '）', icon: '👤' })));
+      section('🧩 情节', (p.data.plots || []).map((pl) => ({ kind: 'plot', id: pl.id, name: pl.name || pl.id, icon: '🧩' })));
+      section('💡 灵感', (p.data.notes || []).map((n) => ({ kind: 'note', id: n.id, name: String(n.content || n.id).slice(0, 20), icon: '💡' })));
+      section('⏳ 时间线 / 空间线', (p.data.tracks || []).map((tr) => ({ kind: 'track', id: tr.id, name: tr.name || tr.id, icon: '⏳' })));
+      section('📍 线节点', (p.data.lineNodes || []).map((nd) => ({ kind: 'node', id: nd.id, name: nd.label || nd.id, icon: '📍' })));
+      section('🧩 时空事件', (p.data.stEvents || []).map((ev) => ({ kind: 'event', id: ev.id, name: ev.label || ev.id, icon: '🧩' })));
+      if (!list.firstChild) list.createEl('div', { text: t('（暂无可绑定的条目）') }).style.cssText = 'font-size:11px;color:var(--text-muted);padding:8px 0';
+    };
+    inp.addEventListener('input', (e) => { self.q = e.target.value; render(); });
+    render();
+  }
+  ownerOf(kind, id) {
+    const p = this.p;
+    if (kind === 'outline') return p.outlineById(id);
+    if (kind === 'entity') return p.entityById(id);
+    if (kind === 'note') return p.noteById(id);
+    if (kind === 'track') return (p.data.tracks || []).find((x) => x.id === id);
+    if (kind === 'node') return (p.data.lineNodes || []).find((x) => x.id === id);
+    if (kind === 'event') return (p.data.stEvents || []).find((x) => x.id === id);
+    return null;
+  }
+  /* 切换绑定：大纲/角色写回对应 md 文件（与 BindModal 同规则），其余只改内存数据后落盘 */
+  async toggle(kind, id, name) {
+    const p = this.p;
+    const chTag = { kind: 'chapter', id: this.path, name: this.chName };
+    let owner = this.ownerOf(kind, id), arrKey = 'bindings';
+    if (kind === 'plot') { owner = (p.data.plots || []).find((x) => x.id === id); arrKey = 'chapters'; }
+    if (!owner) return;
+    owner[arrKey] = owner[arrKey] || [];
+    const idx = owner[arrKey].findIndex((b) => (arrKey === 'chapters' ? (b && b.id === this.path) : (b && b.kind === 'chapter' && b.id === this.path)));
+    if (idx >= 0) owner[arrKey].splice(idx, 1);
+    else owner[arrKey].push(arrKey === 'chapters' ? { id: this.path, name: this.chName } : chTag);
+    if (kind === 'outline') await p.writeOutlineFile(owner, false);
+    else if (kind === 'entity') await p.writeEntityFile(owner, false);
+    await p.saveNow();
+    p.refreshProgressBar(); // 进度卡与悬浮条同源刷新
+    new Notice(t(idx >= 0 ? '已取消绑定：' : '已绑定到本章：') + name);
   }
   onClose() { this.contentEl.empty(); }
 }
@@ -5157,13 +5426,13 @@ class AnnotationEditModal extends Modal {
   onClose() { this.contentEl.empty(); }
 }
 
-/* ================= v2.17 专注写作（番茄钟 + 专注模式合并入口 + 写作场景） ================= */
+
 class FocusModal extends Modal {
   constructor(app, plugin, mode) {
     super(app);
     this.p = plugin;
     this.mode = mode || plugin.settings.focusModeDefault || 'pomodoro';
-    if (this.mode !== 'pomodoro' && this.mode !== 'focus') this.mode = 'pomodoro';
+    if (this.mode !== 'pomodoro' && this.mode !== 'focus' && this.mode !== 'stopwatch') this.mode = 'pomodoro';
   }
   onOpen() {
     const { contentEl } = this, p = this.p;
@@ -5174,14 +5443,18 @@ class FocusModal extends Modal {
     desc.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:10px';
     desc.textContent = this.mode === 'pomodoro'
       ? '🍅 番茄钟：专注 ' + p.settings.pomodoroWork + ' 分 / 短休 ' + p.settings.pomodoroBreak + ' 分 / ' + p.settings.pomodoroRounds + ' 轮后长休 ' + p.settings.pomodoroLongBreak + ' 分；也可直接输入任意分钟数。'
-      : '🎯 自由专注：可选全屏禅模式（低刺激深色壁纸 + 背景音 + 打字音效 + 当前段高亮）；时长任意。';
+      : this.mode === 'stopwatch'
+        ? '⏱ 正计时：从 00:00 开始往上累计，不设结束时间，适合自由码字时记录投入时长；可随时暂停 / 结束，实时速度与本章剩余字数照常显示。'
+        : '🎯 自由专注：可选全屏禅模式（低刺激深色壁纸 + 背景音 + 打字音效 + 当前段高亮）；时长任意。';
 
-    /* --- 模式切换（合并入口） --- */
+    /* --- 模式切换（三合一入口：番茄钟 / 自由专注 / 正计时） --- */
     const mrow = contentEl.createDiv(); mrow.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
     const modeBtnP = mrow.createEl('button', { text: '🍅 番茄钟' }); modeBtnP.className = 'nws-fbtn' + (this.mode === 'pomodoro' ? ' on' : '');
     const modeBtnF = mrow.createEl('button', { text: '🎯 自由专注' }); modeBtnF.className = 'nws-fbtn' + (this.mode === 'focus' ? ' on' : '');
+    const modeBtnS = mrow.createEl('button', { text: '⏱ 正计时' }); modeBtnS.className = 'nws-fbtn' + (this.mode === 'stopwatch' ? ' on' : '');
     modeBtnP.addEventListener('click', () => { if (this.mode !== 'pomodoro') { this.mode = 'pomodoro'; this.onOpen(); } });
     modeBtnF.addEventListener('click', () => { if (this.mode !== 'focus') { this.mode = 'focus'; this.onOpen(); } });
+    modeBtnS.addEventListener('click', () => { if (this.mode !== 'stopwatch') { this.mode = 'stopwatch'; this.onOpen(); } });
 
     /* --- 写作场景（预设 + 自定义；一键打包切换 壁纸/背景音/打字音效/打字模式/全屏） --- */
     contentEl.createEl('div', { text: '写作场景（一键切换氛围；自定义：先调好壁纸/音效再「存为场景」）' }).style.cssText = 'font-size:11px;font-weight:600;margin:2px 0 5px';
@@ -5280,12 +5553,15 @@ class FocusModal extends Modal {
     const renderLive = () => {
       const s = p.focusState;
       if (!s.active) { live.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">' + t('尚未开始 · 实时速度与剩余字数将在此显示') + '</div>'; return; }
-      const left = Math.max(0, (s.left || 0));
+      const isUp = s.countUp || s.mode === 'stopwatch';
+      /* 正计时显示累计秒数；倒计时显示剩余秒数 */
+      const shown = isUp ? Math.max(0, (s.seconds || 0)) : Math.max(0, (s.left || 0));
       const f = p.app.workspace.getActiveFile();
       const target = f ? p.targetOf(f.path) : 0;
       const words = f ? (p.wordCache[f.path] || 0) : 0;
       const remainWord = target > 0 ? Math.max(0, target - words) : 0;
-      live.innerHTML = '<div style="font-size:26px;font-weight:600;font-variant-numeric:tabular-nums">' + fmtDur(left) + '</div>' +
+      live.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">' + (isUp ? t('⏱ 正计时') : t('倒计时')) + '</div>' +
+        '<div style="font-size:26px;font-weight:600;font-variant-numeric:tabular-nums">' + fmtDur(shown) + '</div>' +
         '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
         (s.paused ? t('⏸ 已暂停') : t('● 进行中')) + ' · ⚡ ' + p.pacePerMinute() + t(' 字/分') +
         (target > 0 ? t(' · 本章还差 ') + fmt(remainWord) + t(' 字') : '') + '</div>';
@@ -5298,7 +5574,8 @@ class FocusModal extends Modal {
     const startBtn = brow.createEl('button', { text: t('▶ 开始') }); startBtn.className = 'mod-cta';
     startBtn.addEventListener('click', () => {
       if (p.focusState.active) { new Notice(t('已有计时进行中，请先结束')); return; }
-      p.startFocusSession(this.mode === 'pomodoro' ? 'work' : 'focus', chosenSec || 1500);
+      const sm = this.mode === 'pomodoro' ? 'work' : this.mode === 'stopwatch' ? 'stopwatch' : 'focus';
+      p.startFocusSession(sm, chosenSec || 1500);
       renderLive();
     });
     const pauseBtn = brow.createEl('button', { text: t('⏸ 暂停/继续') });
@@ -5323,7 +5600,8 @@ class NSSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: t('小说写作台 · 设置') });
 
-    /* ===== v2.16 插件主题色（色卡 + 色环 + HEX） ===== */
+
+
     containerEl.createEl('h3', { text: t('插件主题色') });
     const themeNote = containerEl.createDiv();
     themeNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
@@ -5465,14 +5743,17 @@ class NSSettingTab extends PluginSettingTab {
       }));
     new Setting(containerEl).setName('顶部悬浮渐变进度条').setDesc('打开正文时顶部显示渐变进度条：当前字数/目标、百分比、还差多少、实时码字速度')
       .addToggle((t) => t.setValue(p.settings.showProgressBar !== false).onChange(async (v) => { p.settings.showProgressBar = v; await p.saveNow(); p.refreshProgressBar(); }));
+    new Setting(containerEl).setName('正文顶部章节进度卡').setDesc('嵌在每章正文最上方的卡片：章节名、已写/目标字数与百分比（点击可改目标）、进度条、本章绑定的大纲/角色及出现次数')
+      .addToggle((t) => t.setValue(p.settings.showChapterHead !== false).onChange(async (v) => { p.settings.showChapterHead = v; await p.saveNow(); p.refreshProgressBar(); }));
     new Setting(containerEl).setName('码字速度统计窗口(秒)').setDesc('实时速度 = 最近 N 秒码字数换算为字/分钟')
       .addText((t) => t.setValue(String(p.settings.paceWindow || 60)).onChange(async (v) => { p.settings.paceWindow = parseInt(v, 10) || 60; await p.saveNow(); }));
 
     containerEl.createEl('h3', { text: t('番茄钟 / 专注模式') });
     const minClamp = (v, d) => { const n = parseInt(v, 10); return (n >= 1 && n <= 600) ? n : d; };
-    /* v2.17：番茄钟与专注模式已合并为「专注写作」入口；写作场景 = 壁纸/音效/打字模式打包 */
-    new Setting(containerEl).setName('写作场景 · 默认模式').setDesc('侧栏「专注写作」弹窗打开时默认选中 番茄钟 还是 自由专注（弹窗内可随时切换）')
-      .addDropdown((d) => d.addOption('pomodoro', '🍅 番茄钟').addOption('focus', '🎯 自由专注').setValue(p.settings.focusModeDefault || 'pomodoro')
+    
+
+    new Setting(containerEl).setName('写作场景 · 默认模式').setDesc('「专注写作」弹窗打开时默认选中的模式（弹窗内可随时切换）')
+      .addDropdown((d) => d.addOption('pomodoro', '🍅 番茄钟').addOption('focus', '🎯 自由专注').addOption('stopwatch', '⏱ 正计时').setValue(p.settings.focusModeDefault || 'pomodoro')
         .onChange(async (v) => { p.settings.focusModeDefault = v; await p.saveNow(); }));
     /* 写作场景管理：预设只读展示；自定义可删 */
     const scnNote = containerEl.createDiv();
@@ -5520,7 +5801,7 @@ class NSSettingTab extends PluginSettingTab {
     const typeNote = containerEl.createDiv();
     typeNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:6px';
     typeNote.textContent = '小库默认色；在「新建设定 / 更换高亮颜色」里也可对单条设定选「无颜色（加粗+下划线）」。';
-    /* v2.16.1：正文快捷设定总开关——关闭后右键只保留一个「设为设定（自定义）」入口 */
+
     new Setting(containerEl).setName(t('正文快捷设定（选中文字设为…）'))
       .setDesc(t('总开关：码字时选中文字→右键「设为XX」快捷项。关闭后仅保留「设为设定（自定义）」入口；命令面板的快捷命令需重启 Obsidian 后同步'))
       .addToggle((tg) => tg.setValue(p.settings.quickClassifyOn !== false)
@@ -5529,7 +5810,8 @@ class NSSettingTab extends PluginSettingTab {
           await p.saveNow();
           new Notice(v ? t('已开启：右键菜单即时生效') : t('已关闭：右键仅保留「设为设定（自定义）」'));
         }));
-    /* v2.16.3：两级归类菜单（大类▸小库 + 自定义入口）开关，默认隐藏 */
+
+
     new Setting(containerEl).setName(t('完整归类菜单（大类 ▸ 小库 + 自定义入口）'))
       .setDesc(t('默认关闭：右键只显示勾选的快捷项。开启后右键追加「设为设定 · 大类 ▸ 小库」两级菜单与「设为设定（自定义）」入口'))
       .addToggle((tg) => tg.setValue(p.settings.groupClassifyOn === true)
@@ -5538,7 +5820,8 @@ class NSSettingTab extends PluginSettingTab {
           await p.saveNow();
           new Notice(v ? t('已开启：右键菜单即时生效') : t('已关闭：右键仅保留勾选的快捷项'));
         }));
-    /* v2.16：每个类型行末尾加「正文快捷显示」勾选，决定码字选中文字时是否出现在快速分类（默认仅 人物/情节/伏笔） */
+
+
     const quickNote = containerEl.createDiv();
     quickNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
     quickNote.textContent = '☑「正文快捷显示」= 码字时选中文字→右键可直接设为该类型。默认只勾选 人物 / 情节 / 伏笔；还可在下方「自定义快捷项」添加自己的常用入口。';
@@ -5560,7 +5843,7 @@ class NSSettingTab extends PluginSettingTab {
           await p.saveNow();
         }));
     });
-    /* v2.16.2：自定义快捷项（正文选中→右键「设为…」的额外入口；名称可自定义，归属任一小库） */
+  
     containerEl.createEl('h3', { text: t('自定义快捷项（正文选中文字 → 右键设为）') });
     const custNote = containerEl.createDiv();
     custNote.style.cssText = 'font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:8px';
@@ -5616,9 +5899,10 @@ class NSSettingTab extends PluginSettingTab {
       if (v && p.data.outlineTypes.indexOf(v) < 0) { p.data.outlineTypes.push(v); await p.saveNow(); this.display(); }
     }));
 
-    /* ===== v2.15 扩展功能设置 ===== */
+
     if (FEATURES && typeof FEATURES.appendSettings === 'function') FEATURES.appendSettings(containerEl, p);
-    /* v2.16：英文界面下翻译整页文案（DOM 后处理，不影响输入框的值） */
+    
+
     trNode(containerEl);
   }
 }
